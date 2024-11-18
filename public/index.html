@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Binance Order Placer</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+        }
+        input, select {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        #result {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .success {
+            background-color: #dff0d8;
+            border: 1px solid #d6e9c6;
+        }
+        .error {
+            background-color: #f2dede;
+            border: 1px solid #ebccd1;
+        }
+        .helper-text {
+            display: block;
+            font-size: 12px;
+            color: #666;
+            margin-top: -8px;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Binance Order Placer</h1>
+    <form id="orderForm">
+        <div class="form-group">
+            <label for="symbol">Symbol:</label>
+            <input type="text" id="symbol" name="symbol" value="BTCUSDT" required>
+        </div>
+        
+        <div class="form-group">
+            <label for="side">Side:</label>
+            <select id="side" name="side" required>
+                <option value="BUY">Buy</option>
+                <option value="SELL">Sell</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label for="type">Order Type:</label>
+            <select id="type" name="type" required>
+                <option value="LIMIT">Limit</option>
+                <option value="MARKET">Market</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label for="timeInForce">Time In Force:</label>
+            <select id="timeInForce" name="timeInForce" required>
+                <option value="GTC">Good Till Cancel</option>
+                <option value="IOC">Immediate or Cancel</option>
+                <option value="FOK">Fill or Kill</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label for="quantity">Quantity:</label>
+            <input type="number" id="quantity" name="quantity" required>
+            <small id="quantityHelper" class="helper-text"></small>
+        </div>
+
+        <div class="form-group">
+            <label for="price">Price:</label>
+            <input type="number" id="price" name="price" required>
+            <small id="priceHelper" class="helper-text"></small>
+        </div>
+
+        <button type="submit">Place Order</button>
+    </form>
+
+    <div id="result"></div>
+
+    <script>
+        document.getElementById('orderForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const resultDiv = document.getElementById('result');
+
+            try {
+                const response = await fetch('/place-order', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: new URLSearchParams(formData),
+                });
+
+                const result = await response.json();
+                
+                if (result.success) {
+                    resultDiv.className = 'success';
+                    resultDiv.innerHTML = '<h3>Order Placed Successfully!</h3>' +
+                        '<pre>' + JSON.stringify(result.data, null, 2) + '</pre>';
+                } else {
+                    resultDiv.className = 'error';
+                    resultDiv.innerHTML = '<h3>Error Placing Order</h3>' +
+                        '<pre>' + JSON.stringify(result.error, null, 2) + '</pre>';
+                }
+            } catch (error) {
+                resultDiv.className = 'error';
+                resultDiv.innerHTML = '<h3>Error</h3><p>' + error.message + '</p>';
+            }
+        });
+
+        async function updateSymbolInfo(symbol) {
+            try {
+                const response = await fetch(`/symbol-info/${symbol}`);
+                const result = await response.json();
+                
+                if (result.success) {
+                    const info = result.data;
+                    
+                    // Update quantity input
+                    const quantityInput = document.getElementById('quantity');
+                    quantityInput.step = Math.pow(10, -info.quantityPrecision).toString();
+                    quantityInput.min = info.minQty;
+                    quantityInput.max = info.maxQty;
+                    
+                    // Update price input
+                    const priceInput = document.getElementById('price');
+                    priceInput.step = info.tickSize;
+                    priceInput.min = info.minPrice;
+                    priceInput.max = info.maxPrice;
+                    
+                    // Update helper text
+                    document.getElementById('quantityHelper').textContent = 
+                        `Step: ${quantityInput.step} | Min: ${info.minQty} | Max: ${info.maxQty}`;
+                    document.getElementById('priceHelper').textContent = 
+                        `Step: ${info.tickSize} | Min: ${info.minPrice} | Max: ${info.maxPrice}`;
+                }
+            } catch (error) {
+                console.error('Error fetching symbol info:', error);
+            }
+        }
+
+        document.getElementById('symbol').addEventListener('change', (e) => {
+            updateSymbolInfo(e.target.value);
+        });
+
+        window.addEventListener('load', () => {
+            updateSymbolInfo(document.getElementById('symbol').value);
+        });
+    </script>
+</body>
+</html> 
