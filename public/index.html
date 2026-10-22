@@ -169,11 +169,24 @@
             }
         }
 
+        // Disabled fields are left out of the form post, so MARKET orders omit them
+        function updateOrderTypeFields() {
+            const isLimit = document.getElementById('type').value === 'LIMIT';
+            ['price', 'timeInForce'].forEach((id) => {
+                const field = document.getElementById(id);
+                field.disabled = !isLimit;
+                field.required = isLimit;
+            });
+        }
+
+        document.getElementById('type').addEventListener('change', updateOrderTypeFields);
+
         document.getElementById('symbol').addEventListener('change', (e) => {
             updateSymbolInfo(e.target.value);
         });
 
         window.addEventListener('load', () => {
+            updateOrderTypeFields();
             updateSymbolInfo(document.getElementById('symbol').value);
         });
     </script>

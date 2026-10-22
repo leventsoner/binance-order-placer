@@ -13,7 +13,7 @@ A web-based application that allows users to place cryptocurrency orders on Bina
 ## Prerequisites
 
 Before you begin, ensure you have met the following requirements:
-- Node.js (v12.0.0 or higher)
+- Node.js (v20.12.0 or higher)
 - npm (Node Package Manager)
 - Binance API key and Secret key with trading permissions
 
@@ -30,11 +30,14 @@ cd binance-order-placer
 npm install
 ```
 
-3. Create a `.env` file in the root directory with your Binance API credentials:
+3. Provide your Binance API credentials as `BINANCE_API_KEY` and `BINANCE_SECRET_KEY`.
+   Either set them as shell environment variables, or copy `.env.example` to `.env`
+   and fill it in:
 ```bash
-bapi=YOUR_BINANCE_API_KEY
-bsec=YOUR_BINANCE_SECRET_KEY
+cp .env.example .env
 ```
+   `.env` is optional and gitignored. If a variable is set in both the shell and
+   `.env`, the shell value wins.
 ## Usage
 
 1. Start the server:
@@ -43,7 +46,12 @@ node index.js
 ```
 2. Open your web browser and navigate to:
 
-http://localhost:3000
+http://127.0.0.1:3000
+
+The server listens on `127.0.0.1` only, so other devices on your network cannot
+reach it. It also rejects requests whose `Host` is not `127.0.0.1` or `localhost`
+and cross-origin form posts, so other websites open in your browser cannot place
+orders through it. Anything else running on your own machine can still reach it.
 
 3. The interface allows you to:
    - Enter the trading pair (e.g., BTCUSDT)
@@ -61,9 +69,9 @@ http://localhost:3000
   - symbol (e.g., "BTCUSDT")
   - side ("BUY" or "SELL")
   - type ("LIMIT" or "MARKET")
-  - timeInForce ("GTC", "IOC", or "FOK")
+  - timeInForce ("GTC", "IOC", or "FOK") - LIMIT only
   - quantity (number)
-  - price (number)
+  - price (number) - LIMIT only
 
 ### Get Symbol Information
 - **GET** `/symbol-info/:symbol`

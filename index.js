@@ -8,15 +8,42 @@ const BINANCE_API_URL = "https://api.binance.com";
 const ORDER_ENDPOINT = "/api/v3/order";
 const EXCHANGE_INFO_ENDPOINT = "/api/v3/exchangeInfo";
 
+const PORT = process.env.PORT || 3000;
+const HOST = '127.0.0.1';
+const ALLOWED_HOSTS = [`127.0.0.1:${PORT}`, `localhost:${PORT}`];
+
 // Express app setup
 const app = express();
+
+// Loopback binding alone does not stop other web pages (cross-site form posts,
+// DNS rebinding) from reaching this server through the owner's browser
+app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    const isForeignOrigin = origin && !ALLOWED_HOSTS.some((host) => origin === `http://${host}`);
+    const isStateChanging = req.method !== 'GET' && req.method !== 'HEAD';
+
+    if (!ALLOWED_HOSTS.includes(req.headers.host) || (isStateChanging && isForeignOrigin)) {
+        return res.status(403).json({ success: false, error: 'Forbidden' });
+    }
+    next();
+});
+
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.static('public'));
 
+// .env is optional; variables already set in the shell take precedence
+try {
+    process.loadEnvFile();
+} catch (error) {
+    if (error.code !== 'ENOENT') {
+        throw error;
+    }
+}
+
 // Configuration
 const config = {
-    apiKey: process.env.bapi,
-    secretKey: process.env.bsec
+    apiKey: process.env.BINANCE_API_KEY,
+    secretKey: process.env.BINANCE_SECRET_KEY
 };
 
 // Create signature
@@ -88,6 +115,41 @@ function getDecimalPrecision(stepSize) {
     return Math.abs(decimalIndex);
 }
 
+// Binance rejects MARKET orders that carry price or timeInForce
+function buildOrderParams(body) {
+    if (body.type !== 'LIMIT' && body.type !== 'MARKET') {
+        throw new Error('Order type must be LIMIT or MARKET');
+    }
+
+    const orderParams = {
+        symbol: body.symbol,
+        side: body.side,
+        type: body.type,
+        quantity: parsePositiveNumber(body.quantity, 'Quantity'),
+        recvWindow: 20000
+    };
+
+    if (body.type === 'LIMIT') {
+        orderParams.timeInForce = body.timeInForce;
+        orderParams.price = parsePositiveNumber(body.price, 'Price');
+    }
+
+    return orderParams;
+}
+
+function parsePositiveNumber(value, label) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number <= 0) {
+        throw new Error(`${label} must be a number greater than 0`);
+    }
+    return number;
+}
+
+// Binance error bodies carry `msg`; non-JSON failures (e.g. an HTML 5xx page) carry neither
+function errorMessage(error) {
+    return error.msg || error.message || 'Binance request failed';
+}
+
 // Express routes
 app.get('/', (req, res) => {
     res.sendFile(__dirname + '/public/index.html');
@@ -95,20 +157,10 @@ app.get('/', (req, res) => {
 
 app.post('/place-order', async (req, res) => {
     try {
-        const orderParams = {
-            symbol: req.body.symbol,
-            side: req.body.side,
-            type: req.body.type,
-            timeInForce: req.body.timeInForce,
-            quantity: parseFloat(req.body.quantity),
-            price: parseFloat(req.body.price),
-            recvWindow: 20000
-        };
-
-        const result = await placeBinanceOrder(orderParams);
+        const result = await placeBinanceOrder(buildOrderParams(req.body));
         res.json({ success: true, data: result });
     } catch (error) {
-        res.json({ success: false, error: error.message });
+        res.json({ success: false, error: errorMessage(error) });
     }
 });
 
@@ -117,12 +169,11 @@ app.get('/symbol-info/:symbol', async (req, res) => {
         const symbolInfo = await getSymbolInfo(req.params.symbol);
         res.json({ success: true, data: symbolInfo });
     } catch (error) {
-        res.json({ success: false, error: error.message });
+        res.json({ success: false, error: errorMessage(error) });
     }
 });
 
 // Start server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+app.listen(PORT, HOST, () => {
+    console.log(`Server running at http://${HOST}:${PORT}`);
 });
