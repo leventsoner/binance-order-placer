@@ -83,6 +83,19 @@ orders through it. Anything else running on your own machine can still reach it.
   - Price limits
   - Tick size
 
+### Get Balances
+- **GET** `/balances`
+- Returns non-zero spot balances, sorted by asset:
+  - asset (e.g., "BTC")
+  - free
+  - locked
+
+### Get Order History
+- **GET** `/order-history/:symbol`
+- Returns the 20 most recent orders and trades for the symbol, newest first:
+  - orders: orderId, time, side, type, status, price, origQty, executedQty
+  - trades: id, orderId, time, side, price, qty, quoteQty, commission, commissionAsset
+
 ## Security Considerations
 
 - Never commit your `.env` file or expose your API credentials

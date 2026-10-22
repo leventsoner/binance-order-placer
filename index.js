@@ -8,6 +8,9 @@ const BINANCE_API_URL = "https://api.binance.com";
 const ORDER_ENDPOINT = "/api/v3/order";
 const EXCHANGE_INFO_ENDPOINT = "/api/v3/exchangeInfo";
 const ACCOUNT_ENDPOINT = '/api/v3/account';
+const ALL_ORDERS_ENDPOINT = '/api/v3/allOrders';
+const MY_TRADES_ENDPOINT = '/api/v3/myTrades';
+const HISTORY_LIMIT = 20;
 
 const PORT = process.env.PORT || 3000;
 const HOST = '127.0.0.1';
@@ -96,6 +99,24 @@ async function getAccountBalances() {
         .sort((a, b) => a.asset.localeCompare(b.asset));
 }
 
+// Without orderId/fromId, Binance returns the most recent entries oldest first
+async function getOrderHistory(symbol) {
+    const params = { symbol, limit: HISTORY_LIMIT, recvWindow: 20000 };
+    const [orders, trades] = await Promise.all([
+        signedRequest('GET', ALL_ORDERS_ENDPOINT, params),
+        signedRequest('GET', MY_TRADES_ENDPOINT, params)
+    ]);
+
+    return {
+        orders: orders.reverse().map(({ orderId, time, side, type, status, price, origQty, executedQty }) => (
+            { orderId, time, side, type, status, price, origQty, executedQty }
+        )),
+        trades: trades.reverse().map(({ id, orderId, time, isBuyer, price, qty, quoteQty, commission, commissionAsset }) => (
+            { id, orderId, time, side: isBuyer ? 'BUY' : 'SELL', price, qty, quoteQty, commission, commissionAsset }
+        ))
+    };
+}
+
 // Get symbol information
 async function getSymbolInfo(symbol) {
     try {
@@ -134,9 +155,7 @@ function buildOrderParams(body) {
     if (body.type !== 'LIMIT' && body.type !== 'MARKET') {
         throw new Error('Order type must be LIMIT or MARKET');
     }
-    if (typeof body.symbol !== 'string' || !/^[A-Z0-9]{1,20}$/.test(body.symbol)) {
-        throw new Error('Symbol must be 1-20 uppercase letters or digits, e.g. BTCUSDT');
-    }
+    const symbol = parseSymbol(body.symbol);
     if (body.side !== 'BUY' && body.side !== 'SELL') {
         throw new Error('Side must be BUY or SELL');
     }
@@ -145,7 +164,7 @@ function buildOrderParams(body) {
     }
 
     const orderParams = {
-        symbol: body.symbol,
+        symbol,
         side: body.side,
         type: body.type,
         quantity: parsePositiveDecimal(body.quantity, 'Quantity'),
@@ -158,6 +177,13 @@ function buildOrderParams(body) {
     }
 
     return orderParams;
+}
+
+function parseSymbol(value) {
+    if (typeof value !== 'string' || !/^[A-Z0-9]{1,20}$/.test(value)) {
+        throw new Error('Symbol must be 1-20 uppercase letters or digits, e.g. BTCUSDT');
+    }
+    return value;
 }
 
 // Returns the string as typed: converting to a Number would send tiny values as `1e-7`, which Binance rejects
@@ -200,6 +226,15 @@ app.get('/balances', async (req, res) => {
     try {
         const balances = await getAccountBalances();
         res.json({ success: true, data: balances });
+    } catch (error) {
+        res.json({ success: false, error: errorMessage(error) });
+    }
+});
+
+app.get('/order-history/:symbol', async (req, res) => {
+    try {
+        const history = await getOrderHistory(parseSymbol(req.params.symbol));
+        res.json({ success: true, data: history });
     } catch (error) {
         res.json({ success: false, error: errorMessage(error) });
     }

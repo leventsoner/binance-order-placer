@@ -54,12 +54,12 @@
             margin-top: -8px;
             margin-bottom: 10px;
         }
-        #balancesTable {
+        .data-table {
             width: 100%;
             border-collapse: collapse;
             margin-bottom: 10px;
         }
-        #balancesTable th, #balancesTable td {
+        .data-table th, .data-table td {
             text-align: left;
             padding: 6px 8px;
             border-bottom: 1px solid #ddd;
@@ -72,7 +72,7 @@
     <section aria-labelledby="balancesHeading">
         <h2 id="balancesHeading">Balances</h2>
         <p id="balancesStatus" aria-live="polite"></p>
-        <table id="balancesTable" hidden>
+        <table id="balancesTable" class="data-table" hidden>
             <thead>
                 <tr>
                     <th scope="col">Asset</th>
@@ -132,6 +132,45 @@
     </form>
 
     <div id="result"></div>
+
+    <section aria-labelledby="historyHeading">
+        <h2 id="historyHeading">History</h2>
+        <button type="button" id="loadHistory">Load history</button>
+        <p id="historyStatus" aria-live="polite"></p>
+        <div id="ordersTable" hidden>
+            <h3 id="ordersHeading"></h3>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th scope="col">Time</th>
+                        <th scope="col">Side</th>
+                        <th scope="col">Type</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Price</th>
+                        <th scope="col">Quantity</th>
+                        <th scope="col">Filled</th>
+                    </tr>
+                </thead>
+                <tbody id="ordersBody"></tbody>
+            </table>
+        </div>
+        <div id="tradesTable" hidden>
+            <h3 id="tradesHeading"></h3>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th scope="col">Time</th>
+                        <th scope="col">Side</th>
+                        <th scope="col">Price</th>
+                        <th scope="col">Quantity</th>
+                        <th scope="col">Quote qty</th>
+                        <th scope="col">Fee</th>
+                    </tr>
+                </thead>
+                <tbody id="tradesBody"></tbody>
+            </table>
+        </div>
+    </section>
 
     <script>
         document.getElementById('orderForm').addEventListener('submit', async (e) => {
@@ -206,6 +245,18 @@
             });
         }
 
+        function renderRows(tbody, rows) {
+            tbody.replaceChildren(...rows.map((values) => {
+                const row = document.createElement('tr');
+                values.forEach((value) => {
+                    const cell = document.createElement('td');
+                    cell.textContent = value;
+                    row.appendChild(cell);
+                });
+                return row;
+            }));
+        }
+
         async function loadBalances() {
             const status = document.getElementById('balancesStatus');
             const table = document.getElementById('balancesTable');
@@ -226,15 +277,7 @@
                     table.hidden = true;
                     status.textContent = 'No non-zero spot balances.';
                 } else {
-                    body.replaceChildren(...result.data.map(({ asset, free, locked }) => {
-                        const row = document.createElement('tr');
-                        [asset, free, locked].forEach((value) => {
-                            const cell = document.createElement('td');
-                            cell.textContent = value;
-                            row.appendChild(cell);
-                        });
-                        return row;
-                    }));
+                    renderRows(body, result.data.map(({ asset, free, locked }) => [asset, free, locked]));
                     table.hidden = false;
                     status.textContent = '';
                 }
@@ -247,6 +290,70 @@
         }
 
         document.getElementById('refreshBalances').addEventListener('click', loadBalances);
+
+        async function loadHistory() {
+            const symbol = document.getElementById('symbol').value.trim();
+            const status = document.getElementById('historyStatus');
+            const ordersTable = document.getElementById('ordersTable');
+            const tradesTable = document.getElementById('tradesTable');
+            const loadButton = document.getElementById('loadHistory');
+            const formatTime = (time) => new Date(time).toLocaleString();
+
+            if (!symbol) {
+                ordersTable.hidden = true;
+                tradesTable.hidden = true;
+                status.textContent = 'Enter a symbol first.';
+                return;
+            }
+
+            loadButton.disabled = true;
+            status.textContent = `Loading history for ${symbol}...`;
+
+            try {
+                const response = await fetch(`/order-history/${encodeURIComponent(symbol)}`);
+                const result = await response.json();
+
+                if (!result.success) {
+                    ordersTable.hidden = true;
+                    tradesTable.hidden = true;
+                    status.textContent = result.error;
+                    return;
+                }
+
+                const { orders, trades } = result.data;
+                const emptyMessages = [];
+
+                document.getElementById('ordersHeading').textContent = `Orders: ${symbol}`;
+                renderRows(document.getElementById('ordersBody'), orders.map((order) => [
+                    formatTime(order.time), order.side, order.type, order.status,
+                    order.price, order.origQty, order.executedQty
+                ]));
+                ordersTable.hidden = orders.length === 0;
+                if (orders.length === 0) {
+                    emptyMessages.push(`No orders for ${symbol}.`);
+                }
+
+                document.getElementById('tradesHeading').textContent = `Trades: ${symbol}`;
+                renderRows(document.getElementById('tradesBody'), trades.map((trade) => [
+                    formatTime(trade.time), trade.side, trade.price, trade.qty,
+                    trade.quoteQty, `${trade.commission} ${trade.commissionAsset}`
+                ]));
+                tradesTable.hidden = trades.length === 0;
+                if (trades.length === 0) {
+                    emptyMessages.push(`No trades for ${symbol}.`);
+                }
+
+                status.textContent = emptyMessages.join(' ');
+            } catch (error) {
+                ordersTable.hidden = true;
+                tradesTable.hidden = true;
+                status.textContent = error.message;
+            } finally {
+                loadButton.disabled = false;
+            }
+        }
+
+        document.getElementById('loadHistory').addEventListener('click', loadHistory);
 
         document.getElementById('type').addEventListener('change', updateOrderTypeFields);
 
