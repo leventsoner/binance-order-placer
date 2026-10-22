@@ -7,6 +7,7 @@ const bodyParser = require('body-parser');
 const BINANCE_API_URL = "https://api.binance.com";
 const ORDER_ENDPOINT = "/api/v3/order";
 const EXCHANGE_INFO_ENDPOINT = "/api/v3/exchangeInfo";
+const ACCOUNT_ENDPOINT = '/api/v3/account';
 
 const PORT = process.env.PORT || 3000;
 const HOST = '127.0.0.1';
@@ -54,20 +55,23 @@ const createSignature = (queryString, secretKey) => {
         .digest('hex');
 };
 
-// Place order function
-async function placeBinanceOrder(orderParams) {
+async function signedRequest(method, endpoint, params) {
+    if (!config.apiKey || !config.secretKey) {
+        throw new Error('Binance API keys are not configured (BINANCE_API_KEY, BINANCE_SECRET_KEY)');
+    }
+
     try {
         const timestamp = Date.now();
         const queryString = new URLSearchParams({
-            ...orderParams,
+            ...params,
             timestamp
         }).toString();
 
         const signature = createSignature(queryString, config.secretKey);
 
         const response = await axios({
-            method: 'POST',
-            url: `${BINANCE_API_URL}${ORDER_ENDPOINT}?${queryString}&signature=${signature}`,
+            method,
+            url: `${BINANCE_API_URL}${endpoint}?${queryString}&signature=${signature}`,
             headers: {
                 'X-MBX-APIKEY': config.apiKey
             }
@@ -78,6 +82,18 @@ async function placeBinanceOrder(orderParams) {
     } catch (error) {
         throw error.response?.data || error;
     }
+}
+
+async function placeBinanceOrder(orderParams) {
+    return signedRequest('POST', ORDER_ENDPOINT, orderParams);
+}
+
+async function getAccountBalances() {
+    const account = await signedRequest('GET', ACCOUNT_ENDPOINT, { recvWindow: 20000 });
+    return account.balances
+        .filter(({ free, locked }) => Number(free) > 0 || Number(locked) > 0)
+        .map(({ asset, free, locked }) => ({ asset, free, locked }))
+        .sort((a, b) => a.asset.localeCompare(b.asset));
 }
 
 // Get symbol information
@@ -175,6 +191,15 @@ app.get('/symbol-info/:symbol', async (req, res) => {
     try {
         const symbolInfo = await getSymbolInfo(req.params.symbol);
         res.json({ success: true, data: symbolInfo });
+    } catch (error) {
+        res.json({ success: false, error: errorMessage(error) });
+    }
+});
+
+app.get('/balances', async (req, res) => {
+    try {
+        const balances = await getAccountBalances();
+        res.json({ success: true, data: balances });
     } catch (error) {
         res.json({ success: false, error: errorMessage(error) });
     }

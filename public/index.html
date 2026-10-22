@@ -54,10 +54,37 @@
             margin-top: -8px;
             margin-bottom: 10px;
         }
+        #balancesTable {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 10px;
+        }
+        #balancesTable th, #balancesTable td {
+            text-align: left;
+            padding: 6px 8px;
+            border-bottom: 1px solid #ddd;
+        }
     </style>
 </head>
 <body>
     <h1>Binance Order Placer</h1>
+
+    <section aria-labelledby="balancesHeading">
+        <h2 id="balancesHeading">Balances</h2>
+        <p id="balancesStatus" aria-live="polite"></p>
+        <table id="balancesTable" hidden>
+            <thead>
+                <tr>
+                    <th scope="col">Asset</th>
+                    <th scope="col">Free</th>
+                    <th scope="col">Locked</th>
+                </tr>
+            </thead>
+            <tbody id="balancesBody"></tbody>
+        </table>
+        <button type="button" id="refreshBalances">Refresh</button>
+    </section>
+
     <form id="orderForm">
         <div class="form-group">
             <label for="symbol">Symbol:</label>
@@ -179,6 +206,48 @@
             });
         }
 
+        async function loadBalances() {
+            const status = document.getElementById('balancesStatus');
+            const table = document.getElementById('balancesTable');
+            const body = document.getElementById('balancesBody');
+            const refreshButton = document.getElementById('refreshBalances');
+
+            refreshButton.disabled = true;
+            status.textContent = 'Loading balances...';
+
+            try {
+                const response = await fetch('/balances');
+                const result = await response.json();
+
+                if (!result.success) {
+                    table.hidden = true;
+                    status.textContent = result.error;
+                } else if (result.data.length === 0) {
+                    table.hidden = true;
+                    status.textContent = 'No non-zero spot balances.';
+                } else {
+                    body.replaceChildren(...result.data.map(({ asset, free, locked }) => {
+                        const row = document.createElement('tr');
+                        [asset, free, locked].forEach((value) => {
+                            const cell = document.createElement('td');
+                            cell.textContent = value;
+                            row.appendChild(cell);
+                        });
+                        return row;
+                    }));
+                    table.hidden = false;
+                    status.textContent = '';
+                }
+            } catch (error) {
+                table.hidden = true;
+                status.textContent = error.message;
+            } finally {
+                refreshButton.disabled = false;
+            }
+        }
+
+        document.getElementById('refreshBalances').addEventListener('click', loadBalances);
+
         document.getElementById('type').addEventListener('change', updateOrderTypeFields);
 
         document.getElementById('symbol').addEventListener('change', (e) => {
@@ -187,6 +256,7 @@
 
         window.addEventListener('load', () => {
             updateOrderTypeFields();
+            loadBalances();
             updateSymbolInfo(document.getElementById('symbol').value);
         });
     </script>
