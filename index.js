@@ -5,6 +5,7 @@ const bodyParser = require('body-parser');
 
 // Constants
 const BINANCE_API_URL = "https://api.binance.com";
+const BINANCE_TESTNET_API_URL = 'https://testnet.binance.vision';
 const ORDER_ENDPOINT = "/api/v3/order";
 const EXCHANGE_INFO_ENDPOINT = "/api/v3/exchangeInfo";
 const ACCOUNT_ENDPOINT = '/api/v3/account';
@@ -44,10 +45,20 @@ try {
     }
 }
 
-// Configuration
-const config = {
-    apiKey: process.env.BINANCE_API_KEY,
-    secretKey: process.env.BINANCE_SECRET_KEY
+// Each mode only ever uses its own key pair; there is no fallback to the other
+const MODES = {
+    live: {
+        baseUrl: BINANCE_API_URL,
+        apiKey: process.env.BINANCE_API_KEY,
+        secretKey: process.env.BINANCE_SECRET_KEY,
+        keyNames: 'BINANCE_API_KEY, BINANCE_SECRET_KEY'
+    },
+    testnet: {
+        baseUrl: BINANCE_TESTNET_API_URL,
+        apiKey: process.env.BINANCE_TESTNET_API_KEY,
+        secretKey: process.env.BINANCE_TESTNET_SECRET_KEY,
+        keyNames: 'BINANCE_TESTNET_API_KEY, BINANCE_TESTNET_SECRET_KEY'
+    }
 };
 
 // Create signature
@@ -58,9 +69,9 @@ const createSignature = (queryString, secretKey) => {
         .digest('hex');
 };
 
-async function signedRequest(method, endpoint, params) {
-    if (!config.apiKey || !config.secretKey) {
-        throw new Error('Binance API keys are not configured (BINANCE_API_KEY, BINANCE_SECRET_KEY)');
+async function signedRequest(mode, method, endpoint, params) {
+    if (!mode.apiKey || !mode.secretKey) {
+        throw new Error(`Binance API keys are not configured (${mode.keyNames})`);
     }
 
     try {
@@ -70,13 +81,13 @@ async function signedRequest(method, endpoint, params) {
             timestamp
         }).toString();
 
-        const signature = createSignature(queryString, config.secretKey);
+        const signature = createSignature(queryString, mode.secretKey);
 
         const response = await axios({
             method,
-            url: `${BINANCE_API_URL}${endpoint}?${queryString}&signature=${signature}`,
+            url: `${mode.baseUrl}${endpoint}?${queryString}&signature=${signature}`,
             headers: {
-                'X-MBX-APIKEY': config.apiKey
+                'X-MBX-APIKEY': mode.apiKey
             }
         });
 
@@ -87,12 +98,12 @@ async function signedRequest(method, endpoint, params) {
     }
 }
 
-async function placeBinanceOrder(orderParams) {
-    return signedRequest('POST', ORDER_ENDPOINT, orderParams);
+async function placeBinanceOrder(mode, orderParams) {
+    return signedRequest(mode, 'POST', ORDER_ENDPOINT, orderParams);
 }
 
-async function getAccountBalances() {
-    const account = await signedRequest('GET', ACCOUNT_ENDPOINT, { recvWindow: 20000 });
+async function getAccountBalances(mode) {
+    const account = await signedRequest(mode, 'GET', ACCOUNT_ENDPOINT, { recvWindow: 20000 });
     return account.balances
         .filter(({ free, locked }) => Number(free) > 0 || Number(locked) > 0)
         .map(({ asset, free, locked }) => ({ asset, free, locked }))
@@ -100,11 +111,11 @@ async function getAccountBalances() {
 }
 
 // Without orderId/fromId, Binance returns the most recent entries oldest first
-async function getOrderHistory(symbol) {
+async function getOrderHistory(mode, symbol) {
     const params = { symbol, limit: HISTORY_LIMIT, recvWindow: 20000 };
     const [orders, trades] = await Promise.all([
-        signedRequest('GET', ALL_ORDERS_ENDPOINT, params),
-        signedRequest('GET', MY_TRADES_ENDPOINT, params)
+        signedRequest(mode, 'GET', ALL_ORDERS_ENDPOINT, params),
+        signedRequest(mode, 'GET', MY_TRADES_ENDPOINT, params)
     ]);
 
     return {
@@ -118,9 +129,10 @@ async function getOrderHistory(symbol) {
 }
 
 // Get symbol information
-async function getSymbolInfo(symbol) {
+// The testnet lists its own symbols and filters, so exchange info follows the mode
+async function getSymbolInfo(mode, symbol) {
     try {
-        const response = await axios.get(`${BINANCE_API_URL}${EXCHANGE_INFO_ENDPOINT}`);
+        const response = await axios.get(`${mode.baseUrl}${EXCHANGE_INFO_ENDPOINT}`);
         const symbolInfo = response.data.symbols.find(s => s.symbol === symbol);
         
         if (!symbolInfo) {
@@ -179,6 +191,14 @@ function buildOrderParams(body) {
     return orderParams;
 }
 
+// Query strings can repeat a key, which Express turns into an array, so require a plain string
+function parseMode(value) {
+    if (typeof value !== 'string' || !Object.hasOwn(MODES, value)) {
+        throw new Error('Mode must be live or testnet');
+    }
+    return MODES[value];
+}
+
 function parseSymbol(value) {
     if (typeof value !== 'string' || !/^[A-Z0-9]{1,20}$/.test(value)) {
         throw new Error('Symbol must be 1-20 uppercase letters or digits, e.g. BTCUSDT');
@@ -206,7 +226,8 @@ app.get('/', (req, res) => {
 
 app.post('/place-order', async (req, res) => {
     try {
-        const result = await placeBinanceOrder(buildOrderParams(req.body));
+        const mode = parseMode(req.body.mode);
+        const result = await placeBinanceOrder(mode, buildOrderParams(req.body));
         res.json({ success: true, data: result });
     } catch (error) {
         res.json({ success: false, error: errorMessage(error) });
@@ -215,7 +236,8 @@ app.post('/place-order', async (req, res) => {
 
 app.get('/symbol-info/:symbol', async (req, res) => {
     try {
-        const symbolInfo = await getSymbolInfo(req.params.symbol);
+        const mode = parseMode(req.query.mode);
+        const symbolInfo = await getSymbolInfo(mode, req.params.symbol);
         res.json({ success: true, data: symbolInfo });
     } catch (error) {
         res.json({ success: false, error: errorMessage(error) });
@@ -224,7 +246,7 @@ app.get('/symbol-info/:symbol', async (req, res) => {
 
 app.get('/balances', async (req, res) => {
     try {
-        const balances = await getAccountBalances();
+        const balances = await getAccountBalances(parseMode(req.query.mode));
         res.json({ success: true, data: balances });
     } catch (error) {
         res.json({ success: false, error: errorMessage(error) });
@@ -233,7 +255,8 @@ app.get('/balances', async (req, res) => {
 
 app.get('/order-history/:symbol', async (req, res) => {
     try {
-        const history = await getOrderHistory(parseSymbol(req.params.symbol));
+        const mode = parseMode(req.query.mode);
+        const history = await getOrderHistory(mode, parseSymbol(req.params.symbol));
         res.json({ success: true, data: history });
     } catch (error) {
         res.json({ success: false, error: errorMessage(error) });

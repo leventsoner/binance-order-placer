@@ -64,10 +64,45 @@
             padding: 6px 8px;
             border-bottom: 1px solid #ddd;
         }
+        body.mode-testnet {
+            background-color: #e3f2fd;
+        }
+        body.mode-live {
+            background-color: #fdecea;
+        }
+        #modeBanner {
+            color: white;
+            font-weight: bold;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+        }
+        .mode-testnet #modeBanner {
+            background-color: #1565c0;
+        }
+        .mode-live #modeBanner {
+            background-color: #c62828;
+        }
+        #modeSwitch label {
+            display: inline;
+            margin-right: 15px;
+        }
+        #modeSwitch input {
+            width: auto;
+        }
     </style>
 </head>
-<body>
+<body class="mode-testnet">
     <h1>Binance Order Placer</h1>
+    <p id="modeBanner" aria-live="polite"></p>
+
+    <fieldset id="modeSwitch">
+        <legend>Mode</legend>
+        <input type="radio" id="modeTestnet" name="modeSwitch" value="testnet" checked>
+        <label for="modeTestnet">Testnet</label>
+        <input type="radio" id="modeLive" name="modeSwitch" value="live">
+        <label for="modeLive">Live</label>
+    </fieldset>
 
     <section aria-labelledby="balancesHeading">
         <h2 id="balancesHeading">Balances</h2>
@@ -86,6 +121,7 @@
     </section>
 
     <form id="orderForm">
+        <input type="hidden" id="orderMode" name="mode" value="testnet">
         <div class="form-group">
             <label for="symbol">Symbol:</label>
             <input type="text" id="symbol" name="symbol" value="BTCUSDT" required>
@@ -128,7 +164,7 @@
             <small id="priceHelper" class="helper-text"></small>
         </div>
 
-        <button type="submit">Place Order</button>
+        <button type="submit" id="submitOrder">Place TESTNET order</button>
     </form>
 
     <div id="result"></div>
@@ -173,10 +209,39 @@
     </section>
 
     <script>
+        const MODE_DISPLAY = {
+            testnet: {
+                label: 'TESTNET',
+                banner: "TESTNET: orders go to Binance's spot testnet. No real funds."
+            },
+            live: {
+                label: 'LIVE',
+                banner: 'LIVE: orders spend real funds.'
+            }
+        };
+
+        // Bumped on every mode switch; a load that finishes after a switch belongs to the old mode
+        let modeGeneration = 0;
+
+        function currentMode() {
+            return document.querySelector('input[name="modeSwitch"]:checked').value;
+        }
+
+        function showResult(className, heading, text) {
+            const resultDiv = document.getElementById('result');
+            const headingElement = document.createElement('h3');
+            const body = document.createElement('pre');
+            headingElement.textContent = heading;
+            body.textContent = text;
+            resultDiv.className = className;
+            resultDiv.replaceChildren(headingElement, body);
+        }
+
+        // The order was really sent, so its result is shown even after a mode switch, labelled with its own mode
         document.getElementById('orderForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             const formData = new FormData(e.target);
-            const resultDiv = document.getElementById('result');
+            const label = MODE_DISPLAY[formData.get('mode')].label;
 
             try {
                 const response = await fetch('/place-order', {
@@ -188,28 +253,24 @@
                 });
 
                 const result = await response.json();
-                
+
                 if (result.success) {
-                    resultDiv.className = 'success';
-                    resultDiv.innerHTML = '<h3>Order Placed Successfully!</h3>' +
-                        '<pre>' + JSON.stringify(result.data, null, 2) + '</pre>';
+                    showResult('success', `Order Placed Successfully (${label})`, JSON.stringify(result.data, null, 2));
                 } else {
-                    resultDiv.className = 'error';
-                    resultDiv.innerHTML = '<h3>Error Placing Order</h3>' +
-                        '<pre>' + JSON.stringify(result.error, null, 2) + '</pre>';
+                    showResult('error', `Error Placing Order (${label})`, result.error);
                 }
             } catch (error) {
-                resultDiv.className = 'error';
-                resultDiv.innerHTML = '<h3>Error</h3><p>' + error.message + '</p>';
+                showResult('error', `Error (${label})`, error.message);
             }
         });
 
         async function updateSymbolInfo(symbol) {
+            const generation = modeGeneration;
             try {
-                const response = await fetch(`/symbol-info/${symbol}`);
+                const response = await fetch(`/symbol-info/${encodeURIComponent(symbol)}?mode=${currentMode()}`);
                 const result = await response.json();
-                
-                if (result.success) {
+
+                if (generation === modeGeneration && result.success) {
                     const info = result.data;
                     
                     // Update quantity input
@@ -262,14 +323,19 @@
             const table = document.getElementById('balancesTable');
             const body = document.getElementById('balancesBody');
             const refreshButton = document.getElementById('refreshBalances');
+            const generation = modeGeneration;
 
             refreshButton.disabled = true;
+            table.hidden = true;
             status.textContent = 'Loading balances...';
 
             try {
-                const response = await fetch('/balances');
+                const response = await fetch(`/balances?mode=${currentMode()}`);
                 const result = await response.json();
 
+                if (generation !== modeGeneration) {
+                    return;
+                }
                 if (!result.success) {
                     table.hidden = true;
                     status.textContent = result.error;
@@ -282,10 +348,14 @@
                     status.textContent = '';
                 }
             } catch (error) {
-                table.hidden = true;
-                status.textContent = error.message;
+                if (generation === modeGeneration) {
+                    table.hidden = true;
+                    status.textContent = error.message;
+                }
             } finally {
-                refreshButton.disabled = false;
+                if (generation === modeGeneration) {
+                    refreshButton.disabled = false;
+                }
             }
         }
 
@@ -298,6 +368,7 @@
             const tradesTable = document.getElementById('tradesTable');
             const loadButton = document.getElementById('loadHistory');
             const formatTime = (time) => new Date(time).toLocaleString();
+            const generation = modeGeneration;
 
             if (!symbol) {
                 ordersTable.hidden = true;
@@ -310,9 +381,12 @@
             status.textContent = `Loading history for ${symbol}...`;
 
             try {
-                const response = await fetch(`/order-history/${encodeURIComponent(symbol)}`);
+                const response = await fetch(`/order-history/${encodeURIComponent(symbol)}?mode=${currentMode()}`);
                 const result = await response.json();
 
+                if (generation !== modeGeneration) {
+                    return;
+                }
                 if (!result.success) {
                     ordersTable.hidden = true;
                     tradesTable.hidden = true;
@@ -345,15 +419,52 @@
 
                 status.textContent = emptyMessages.join(' ');
             } catch (error) {
-                ordersTable.hidden = true;
-                tradesTable.hidden = true;
-                status.textContent = error.message;
+                if (generation === modeGeneration) {
+                    ordersTable.hidden = true;
+                    tradesTable.hidden = true;
+                    status.textContent = error.message;
+                }
             } finally {
-                loadButton.disabled = false;
+                if (generation === modeGeneration) {
+                    loadButton.disabled = false;
+                }
             }
         }
 
         document.getElementById('loadHistory').addEventListener('click', loadHistory);
+
+        function applyMode() {
+            const mode = currentMode();
+            const display = MODE_DISPLAY[mode];
+            modeGeneration++;
+
+            document.body.className = `mode-${mode}`;
+            document.getElementById('modeBanner').textContent = display.banner;
+            document.getElementById('submitOrder').textContent = `Place ${display.label} order`;
+            document.getElementById('orderMode').value = mode;
+
+            const resultDiv = document.getElementById('result');
+            resultDiv.className = '';
+            resultDiv.replaceChildren();
+            document.getElementById('ordersTable').hidden = true;
+            document.getElementById('tradesTable').hidden = true;
+            document.getElementById('historyStatus').textContent = '';
+            document.getElementById('loadHistory').disabled = false;
+
+            // The testnet has its own filters, so the old mode's limits must not linger if the lookup fails
+            ['quantity', 'price'].forEach((id) => {
+                const input = document.getElementById(id);
+                ['step', 'min', 'max'].forEach((attribute) => input.removeAttribute(attribute));
+                document.getElementById(`${id}Helper`).textContent = '';
+            });
+
+            loadBalances();
+            updateSymbolInfo(document.getElementById('symbol').value);
+        }
+
+        document.querySelectorAll('input[name="modeSwitch"]').forEach((radio) => {
+            radio.addEventListener('change', applyMode);
+        });
 
         document.getElementById('type').addEventListener('change', updateOrderTypeFields);
 
@@ -363,8 +474,7 @@
 
         window.addEventListener('load', () => {
             updateOrderTypeFields();
-            loadBalances();
-            updateSymbolInfo(document.getElementById('symbol').value);
+            applyMode();
         });
     </script>
 </body>
