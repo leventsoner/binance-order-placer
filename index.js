@@ -58,12 +58,10 @@ const createSignature = (queryString, secretKey) => {
 async function placeBinanceOrder(orderParams) {
     try {
         const timestamp = Date.now();
-        const queryString = Object.entries({
+        const queryString = new URLSearchParams({
             ...orderParams,
             timestamp
-        })
-        .map(([key, value]) => `${key}=${value}`)
-        .join('&');
+        }).toString();
 
         const signature = createSignature(queryString, config.secretKey);
 
@@ -120,29 +118,38 @@ function buildOrderParams(body) {
     if (body.type !== 'LIMIT' && body.type !== 'MARKET') {
         throw new Error('Order type must be LIMIT or MARKET');
     }
+    if (typeof body.symbol !== 'string' || !/^[A-Z0-9]{1,20}$/.test(body.symbol)) {
+        throw new Error('Symbol must be 1-20 uppercase letters or digits, e.g. BTCUSDT');
+    }
+    if (body.side !== 'BUY' && body.side !== 'SELL') {
+        throw new Error('Side must be BUY or SELL');
+    }
+    if (body.type === 'LIMIT' && !['GTC', 'IOC', 'FOK'].includes(body.timeInForce)) {
+        throw new Error('Time in force must be GTC, IOC, or FOK');
+    }
 
     const orderParams = {
         symbol: body.symbol,
         side: body.side,
         type: body.type,
-        quantity: parsePositiveNumber(body.quantity, 'Quantity'),
+        quantity: parsePositiveDecimal(body.quantity, 'Quantity'),
         recvWindow: 20000
     };
 
     if (body.type === 'LIMIT') {
         orderParams.timeInForce = body.timeInForce;
-        orderParams.price = parsePositiveNumber(body.price, 'Price');
+        orderParams.price = parsePositiveDecimal(body.price, 'Price');
     }
 
     return orderParams;
 }
 
-function parsePositiveNumber(value, label) {
-    const number = Number(value);
-    if (!Number.isFinite(number) || number <= 0) {
-        throw new Error(`${label} must be a number greater than 0`);
+// Returns the string as typed: converting to a Number would send tiny values as `1e-7`, which Binance rejects
+function parsePositiveDecimal(value, label) {
+    if (typeof value !== 'string' || !/^\d+(\.\d+)?$/.test(value) || Number(value) <= 0) {
+        throw new Error(`${label} must be a plain decimal number greater than 0, e.g. 0.001`);
     }
-    return number;
+    return value;
 }
 
 // Binance error bodies carry `msg`; non-JSON failures (e.g. an HTML 5xx page) carry neither
