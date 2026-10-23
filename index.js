@@ -126,10 +126,16 @@ async function getOrderHistory(mode, symbol) {
     };
 }
 
-// The testnet lists its own symbols and filters, so exchange info follows the mode
+// The testnet lists its own symbols and filters, so exchange info follows the mode.
+// Asking for one symbol avoids downloading every pair; Binance rejects unknown symbols itself.
 async function fetchSymbol(mode, symbol) {
-    const response = await axios.get(`${mode.baseUrl}${EXCHANGE_INFO_ENDPOINT}`);
-    const symbolInfo = response.data.symbols.find(s => s.symbol === symbol);
+    let response;
+    try {
+        response = await axios.get(`${mode.baseUrl}${EXCHANGE_INFO_ENDPOINT}`, { params: { symbol } });
+    } catch (error) {
+        throw error.response?.data || error;
+    }
+    const symbolInfo = response.data.symbols[0];
 
     if (!symbolInfo) {
         throw new Error('Symbol not found');
@@ -439,7 +445,7 @@ app.post('/cancel-order', async (req, res) => {
 app.get('/symbol-info/:symbol', async (req, res) => {
     try {
         const mode = parseMode(req.query.mode);
-        const symbolInfo = await getSymbolInfo(mode, req.params.symbol);
+        const symbolInfo = await getSymbolInfo(mode, parseSymbol(req.params.symbol));
         res.json({ success: true, data: symbolInfo });
     } catch (error) {
         res.json({ success: false, error: errorMessage(error) });
