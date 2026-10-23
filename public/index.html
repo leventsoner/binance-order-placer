@@ -340,7 +340,8 @@
             }
         }
 
-        // Disabled fields are left out of the form post, so each order type only sends its own fields
+        // Disabled fields are left out of the form post, so each order type only sends its own fields.
+        // A disabled stop or TP/SL field is also emptied, so it never shows a protective price that will not be sent.
         function updateOrderTypeFields() {
             const type = document.getElementById('type').value;
             const isLimitStyle = type !== 'MARKET';
@@ -354,12 +355,23 @@
             const stopPriceField = document.getElementById('stopPrice');
             stopPriceField.disabled = !hasStopPrice;
             stopPriceField.required = hasStopPrice;
+            if (!hasStopPrice) {
+                stopPriceField.value = '';
+            }
             const stopLimitPriceField = document.getElementById('stopLimitPrice');
             stopLimitPriceField.disabled = !isOco;
             stopLimitPriceField.required = isOco;
+            if (!isOco) {
+                stopLimitPriceField.value = '';
+            }
             // TP/SL stays optional; the server enforces both-or-neither
+            const hasTpSl = type === 'LIMIT' || type === 'MARKET';
             ['takeProfitPrice', 'stopLossPrice'].forEach((id) => {
-                document.getElementById(id).disabled = type !== 'LIMIT' && type !== 'MARKET';
+                const field = document.getElementById(id);
+                field.disabled = !hasTpSl;
+                if (!hasTpSl) {
+                    field.value = '';
+                }
             });
         }
 
