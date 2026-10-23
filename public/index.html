@@ -190,7 +190,7 @@
             <label for="stopLossPrice">Stop Loss Price:</label>
             <input type="number" id="stopLossPrice" name="stopLossPrice" aria-describedby="stopLossPriceHelper tpSlNote">
             <small id="stopLossPriceHelper" class="helper-text"></small>
-            <small id="tpSlNote" class="helper-text">Optional, Limit orders only. Fill in both or neither. Once the order fully fills, Binance places a take-profit limit at Take Profit Price and a stop-market order at Stop Loss Price for the same quantity; when one executes, the other is cancelled.</small>
+            <small id="tpSlNote" class="helper-text">Optional, Limit and Market orders only. Fill in both or neither. Limit: once the order fully fills, Binance places a take-profit limit at Take Profit Price and a stop-market order at Stop Loss Price for the same quantity. Market: after the order fills, a take-profit limit and stop-market pair is placed for the filled quantity (less any fee taken in the bought coin). When one executes, the other is cancelled. For Market these are two separate requests: if the second is rejected, the order stays filled without TP/SL and the error says so.</small>
         </div>
 
         <button type="submit" id="submitOrder">Place TESTNET order</button>
@@ -356,7 +356,7 @@
             stopLimitPriceField.required = isOco;
             // TP/SL stays optional; the server enforces both-or-neither
             ['takeProfitPrice', 'stopLossPrice'].forEach((id) => {
-                document.getElementById(id).disabled = type !== 'LIMIT';
+                document.getElementById(id).disabled = type !== 'LIMIT' && type !== 'MARKET';
             });
         }
 
