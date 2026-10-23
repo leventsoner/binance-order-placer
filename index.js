@@ -15,6 +15,18 @@ const ALL_ORDERS_ENDPOINT = '/api/v3/allOrders';
 const MY_TRADES_ENDPOINT = '/api/v3/myTrades';
 const HISTORY_LIMIT = 20;
 
+const BINANCE_FUTURES_API_URL = 'https://fapi.binance.com';
+const BINANCE_FUTURES_TESTNET_API_URL = 'https://testnet.binancefuture.com';
+const FUTURES_ORDER_ENDPOINT = '/fapi/v1/order';
+const FUTURES_EXCHANGE_INFO_ENDPOINT = '/fapi/v1/exchangeInfo';
+const FUTURES_POSITION_MODE_ENDPOINT = '/fapi/v1/positionSide/dual';
+const FUTURES_MULTI_ASSETS_ENDPOINT = '/fapi/v1/multiAssetsMargin';
+const FUTURES_MARGIN_TYPE_ENDPOINT = '/fapi/v1/marginType';
+const FUTURES_LEVERAGE_ENDPOINT = '/fapi/v1/leverage';
+const FUTURES_LEVERAGE = 3;
+const FUTURES_MARGIN_TYPE = 'ISOLATED';
+const NO_NEED_TO_CHANGE_MARGIN_TYPE = -4046;
+
 const PORT = process.env.PORT || 3000;
 const HOST = '127.0.0.1';
 const ALLOWED_HOSTS = [`127.0.0.1:${PORT}`, `localhost:${PORT}`];
@@ -47,19 +59,32 @@ try {
     }
 }
 
-// Each mode only ever uses its own key pair; there is no fallback to the other
+// Each mode only ever uses its own key pair; there is no fallback to the other.
+// Futures has its own key pair per mode (the futures testnet rejects spot testnet keys), again with no fallback.
 const MODES = {
     live: {
         baseUrl: BINANCE_API_URL,
         apiKey: process.env.BINANCE_API_KEY,
         secretKey: process.env.BINANCE_SECRET_KEY,
-        keyNames: 'BINANCE_API_KEY, BINANCE_SECRET_KEY'
+        keyNames: 'BINANCE_API_KEY, BINANCE_SECRET_KEY',
+        futures: {
+            baseUrl: BINANCE_FUTURES_API_URL,
+            apiKey: process.env.BINANCE_FUTURES_API_KEY,
+            secretKey: process.env.BINANCE_FUTURES_SECRET_KEY,
+            keyNames: 'BINANCE_FUTURES_API_KEY, BINANCE_FUTURES_SECRET_KEY'
+        }
     },
     testnet: {
         baseUrl: BINANCE_TESTNET_API_URL,
         apiKey: process.env.BINANCE_TESTNET_API_KEY,
         secretKey: process.env.BINANCE_TESTNET_SECRET_KEY,
-        keyNames: 'BINANCE_TESTNET_API_KEY, BINANCE_TESTNET_SECRET_KEY'
+        keyNames: 'BINANCE_TESTNET_API_KEY, BINANCE_TESTNET_SECRET_KEY',
+        futures: {
+            baseUrl: BINANCE_FUTURES_TESTNET_API_URL,
+            apiKey: process.env.BINANCE_FUTURES_TESTNET_API_KEY,
+            secretKey: process.env.BINANCE_FUTURES_TESTNET_SECRET_KEY,
+            keyNames: 'BINANCE_FUTURES_TESTNET_API_KEY, BINANCE_FUTURES_TESTNET_SECRET_KEY'
+        }
     }
 };
 
@@ -143,10 +168,28 @@ async function fetchSymbol(mode, symbol) {
     return symbolInfo;
 }
 
-// Get symbol information
-async function getSymbolInfo(mode, symbol) {
+// Futures exchange info takes no symbol parameter, so the whole list is searched
+async function fetchFuturesSymbol(mode, symbol) {
+    let response;
     try {
-        const symbolInfo = await fetchSymbol(mode, symbol);
+        response = await axios.get(`${mode.futures.baseUrl}${FUTURES_EXCHANGE_INFO_ENDPOINT}`);
+    } catch (error) {
+        throw error.response?.data || error;
+    }
+    const symbolInfo = response.data.symbols.find(s => s.symbol === symbol);
+
+    if (!symbolInfo) {
+        throw new Error('Symbol not found');
+    }
+    return symbolInfo;
+}
+
+// Get symbol information; spot and futures share the LOT_SIZE and PRICE_FILTER shapes
+async function getSymbolInfo(mode, market, symbol) {
+    try {
+        const symbolInfo = market === 'futures'
+            ? await fetchFuturesSymbol(mode, symbol)
+            : await fetchSymbol(mode, symbol);
 
         const lotSizeFilter = symbolInfo.filters.find(f => f.filterType === 'LOT_SIZE');
         const priceFilter = symbolInfo.filters.find(f => f.filterType === 'PRICE_FILTER');
@@ -376,6 +419,47 @@ async function placeOrder(mode, body) {
     return signedRequest(mode, 'POST', ORDER_ENDPOINT, buildOrderParams(body));
 }
 
+// Every futures order runs at 3x isolated. Symbol settings are set when they differ; account-wide
+// settings are never changed. Any failure before the order request means no order was placed.
+async function placeFuturesOrder(mode, body) {
+    if (isProvided(body.takeProfitPrice) || isProvided(body.stopLossPrice)) {
+        throw new Error('Take-profit and stop-loss are not supported on futures yet');
+    }
+    if (body.type !== 'LIMIT' && body.type !== 'MARKET') {
+        throw new Error('Futures supports only LIMIT and MARKET orders');
+    }
+    const orderParams = { ...buildOrderParams(body), newOrderRespType: 'RESULT' };
+    const { symbol } = orderParams;
+    const { futures } = mode;
+    const notPlaced = (error) => new Error(`${errorMessage(error).replace(/\.$/, '')}; no order was placed.`);
+
+    let leverage;
+    try {
+        const positionMode = await signedRequest(futures, 'GET', FUTURES_POSITION_MODE_ENDPOINT, { recvWindow: 20000 });
+        if (positionMode.dualSidePosition) {
+            throw new Error('Your futures account is in Hedge position mode. Switch it to One-way mode on Binance');
+        }
+        const assetsMode = await signedRequest(futures, 'GET', FUTURES_MULTI_ASSETS_ENDPOINT, { recvWindow: 20000 });
+        if (assetsMode.multiAssetsMargin) {
+            throw new Error('Your futures account is in Multi-Assets mode, which does not allow isolated margin. Switch it to Single-Asset mode on Binance');
+        }
+        try {
+            await signedRequest(futures, 'POST', FUTURES_MARGIN_TYPE_ENDPOINT, { symbol, marginType: FUTURES_MARGIN_TYPE, recvWindow: 20000 });
+        } catch (error) {
+            if (error.code !== NO_NEED_TO_CHANGE_MARGIN_TYPE) {
+                throw error;
+            }
+        }
+        const leverageResult = await signedRequest(futures, 'POST', FUTURES_LEVERAGE_ENDPOINT, { symbol, leverage: FUTURES_LEVERAGE, recvWindow: 20000 });
+        leverage = leverageResult.leverage;
+    } catch (error) {
+        throw notPlaced(error);
+    }
+
+    const order = await signedRequest(futures, 'POST', FUTURES_ORDER_ENDPOINT, orderParams);
+    return { leverage, marginType: FUTURES_MARGIN_TYPE, order };
+}
+
 // Binance cancels the whole order list when one of its orders is cancelled
 async function cancelOrder(mode, body) {
     const symbol = parseSymbol(body.symbol);
@@ -389,6 +473,13 @@ function parseMode(value) {
         throw new Error('Mode must be live or testnet');
     }
     return MODES[value];
+}
+
+function parseMarket(value) {
+    if (value !== 'spot' && value !== 'futures') {
+        throw new Error('Market must be spot or futures');
+    }
+    return value;
 }
 
 function parseSymbol(value) {
@@ -427,7 +518,10 @@ app.get('/', (req, res) => {
 app.post('/place-order', async (req, res) => {
     try {
         const mode = parseMode(req.body.mode);
-        const result = await placeOrder(mode, req.body);
+        const market = parseMarket(req.body.market);
+        const result = market === 'futures'
+            ? await placeFuturesOrder(mode, req.body)
+            : await placeOrder(mode, req.body);
         res.json({ success: true, data: result });
     } catch (error) {
         res.json({ success: false, error: errorMessage(error) });
@@ -447,7 +541,8 @@ app.post('/cancel-order', async (req, res) => {
 app.get('/symbol-info/:symbol', async (req, res) => {
     try {
         const mode = parseMode(req.query.mode);
-        const symbolInfo = await getSymbolInfo(mode, parseSymbol(req.params.symbol));
+        const market = parseMarket(req.query.market);
+        const symbolInfo = await getSymbolInfo(mode, market, parseSymbol(req.params.symbol));
         res.json({ success: true, data: symbolInfo });
     } catch (error) {
         res.json({ success: false, error: errorMessage(error) });

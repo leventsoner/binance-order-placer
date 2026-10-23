@@ -44,6 +44,18 @@ cp .env.example .env
    https://testnet.binance.vision: sign in with GitHub and generate an HMAC key.
    Testnet keys only work on the testnet, and live keys only work live.
 
+5. Futures has its own key pairs, provided the same way:
+   - Live futures: `BINANCE_FUTURES_API_KEY` and `BINANCE_FUTURES_SECRET_KEY`,
+     from a Binance API key with **Enable Futures** permission.
+   - Futures testnet: `BINANCE_FUTURES_TESTNET_API_KEY` and
+     `BINANCE_FUTURES_TESTNET_SECRET_KEY`. Generate them on Binance Demo Trading
+     (https://testnet.binancefuture.com now redirects there): sign in, then open
+     https://demo.binance.com/en/my/settings/api-management. The spot testnet
+     keys do not work for futures.
+
+   Futures never falls back to the spot keys: if its pair is missing, the order
+   is rejected and nothing is sent to Binance.
+
 ## Usage
 
 1. Start the server:
@@ -64,8 +76,18 @@ orders through it. Anything else running on your own machine can still reach it.
    to trade with real funds. The mode is not remembered, so every reload starts
    on testnet again.
 
-4. The interface allows you to:
-   - Switch between testnet and live mode
+4. The **Market** toggle starts on **Spot**. Switch it to **Futures (USD-M)** to
+   place USD-M futures LIMIT and MARKET orders. Every futures order runs at
+   **3x leverage with isolated margin**: before each order the server sets the
+   symbol's margin type to ISOLATED and its leverage to 3. Setting the leverage
+   also changes the leverage of any position already open on that symbol. If
+   your futures account is in Hedge position mode or Multi-Assets mode, the
+   order is rejected and nothing is changed; switch those settings on Binance.
+   Stop Limit, OCO and take-profit/stop-loss are spot-only, and the Balances
+   and History sections are hidden in the futures view.
+
+5. The interface allows you to:
+   - Switch between testnet and live mode, and between spot and futures
    - Enter the trading pair (e.g., BTCUSDT)
    - Select order side (BUY/SELL)
    - Choose order type (LIMIT/MARKET)
@@ -84,20 +106,25 @@ is sent to Binance.
 - **POST** `/place-order`
 - Requires form data with:
   - mode ("live" or "testnet")
+  - market ("spot" or "futures")
   - symbol (e.g., "BTCUSDT")
   - side ("BUY" or "SELL")
   - type ("LIMIT" or "MARKET")
   - timeInForce ("GTC", "IOC", or "FOK") - LIMIT only
   - quantity (number)
   - price (number) - LIMIT only
+- With market "futures", only LIMIT and MARKET are accepted, without
+  take-profit/stop-loss. On success `data` is
+  `{ leverage, marginType: "ISOLATED", order }`, where `order` is Binance's
+  `/fapi/v1/order` response. A failure while checking or setting the futures
+  account and symbol settings ends with "no order was placed".
 
 ### Get Symbol Information
-- **GET** `/symbol-info/:symbol?mode=live|testnet`
+- **GET** `/symbol-info/:symbol?mode=live|testnet&market=spot|futures`
 - Returns trading pair information including:
   - Quantity precision
   - Price precision
   - Quantity step size
-  - Price tick size
   - Minimum quantity
   - Maximum quantity
   - Price limits

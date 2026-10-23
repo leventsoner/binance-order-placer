@@ -87,11 +87,11 @@
         .mode-live #modeBanner {
             background-color: #c62828;
         }
-        #modeSwitch label {
+        #modeSwitch label, #marketSwitch label {
             display: inline;
             margin-right: 15px;
         }
-        #modeSwitch input {
+        #modeSwitch input, #marketSwitch input {
             width: auto;
         }
     </style>
@@ -108,7 +108,15 @@
         <label for="modeLive">Live</label>
     </fieldset>
 
-    <section aria-labelledby="balancesHeading">
+    <fieldset id="marketSwitch">
+        <legend>Market</legend>
+        <input type="radio" id="marketSpot" name="marketSwitch" value="spot" checked>
+        <label for="marketSpot">Spot</label>
+        <input type="radio" id="marketFutures" name="marketSwitch" value="futures">
+        <label for="marketFutures">Futures (USD-M)</label>
+    </fieldset>
+
+    <section id="balancesSection" aria-labelledby="balancesHeading">
         <h2 id="balancesHeading">Balances</h2>
         <p id="balancesStatus" aria-live="polite"></p>
         <table id="balancesTable" class="data-table" hidden>
@@ -126,6 +134,7 @@
 
     <form id="orderForm">
         <input type="hidden" id="orderMode" name="mode" value="testnet">
+        <input type="hidden" id="orderMarket" name="market" value="spot">
         <div class="form-group">
             <label for="symbol">Symbol:</label>
             <input type="text" id="symbol" name="symbol" value="BTCUSDT" required>
@@ -202,7 +211,7 @@
 
     <div id="result"></div>
 
-    <section aria-labelledby="historyHeading">
+    <section id="historySection" aria-labelledby="historyHeading">
         <h2 id="historyHeading">History</h2>
         <button type="button" id="loadHistory">Load history</button>
         <p id="historyStatus" aria-live="polite"></p>
@@ -254,6 +263,12 @@
             }
         };
 
+        // Futures always runs at 3x isolated (set by the server); the banner says so before any order
+        const FUTURES_BANNERS = {
+            testnet: "TESTNET FUTURES: orders go to Binance's USD-M futures testnet at 3x isolated leverage. No real funds.",
+            live: 'LIVE FUTURES: orders open 3x isolated leveraged USD-M positions with real funds.'
+        };
+
         const OPEN_ORDER_STATUSES = ['NEW', 'PARTIALLY_FILLED'];
         const SUBMIT_COOLDOWN_MS = 1000;
 
@@ -262,6 +277,14 @@
 
         function currentMode() {
             return document.querySelector('input[name="modeSwitch"]:checked').value;
+        }
+
+        function currentMarket() {
+            return document.querySelector('input[name="marketSwitch"]:checked').value;
+        }
+
+        function viewLabel(mode, market) {
+            return market === 'futures' ? `${MODE_DISPLAY[mode].label} FUTURES` : MODE_DISPLAY[mode].label;
         }
 
         function showResult(className, heading, text) {
@@ -281,7 +304,7 @@
             e.preventDefault();
             const submitButton = document.getElementById('submitOrder');
             const formData = new FormData(e.target);
-            const label = MODE_DISPLAY[formData.get('mode')].label;
+            const label = viewLabel(formData.get('mode'), formData.get('market'));
 
             submitButton.disabled = true;
 
@@ -311,7 +334,7 @@
         async function updateSymbolInfo(symbol) {
             const generation = modeGeneration;
             try {
-                const response = await fetch(`/symbol-info/${encodeURIComponent(symbol)}?mode=${currentMode()}`);
+                const response = await fetch(`/symbol-info/${encodeURIComponent(symbol)}?mode=${currentMode()}&market=${currentMarket()}`);
                 const result = await response.json();
 
                 if (generation === modeGeneration && result.success) {
@@ -354,8 +377,17 @@
 
         // Disabled fields are left out of the form post, so each order type only sends its own fields.
         // A disabled stop or TP/SL field is also emptied, so it never shows a protective price that will not be sent.
+        // Futures offers only Limit and Market without TP/SL; a selected spot-only type falls back to Limit.
         function updateOrderTypeFields() {
-            const type = document.getElementById('type').value;
+            const isFutures = currentMarket() === 'futures';
+            const typeField = document.getElementById('type');
+            Array.from(typeField.options).forEach((option) => {
+                option.disabled = isFutures && option.value !== 'LIMIT' && option.value !== 'MARKET';
+            });
+            if (typeField.selectedOptions[0].disabled) {
+                typeField.value = 'LIMIT';
+            }
+            const type = typeField.value;
             const isLimitStyle = type !== 'MARKET';
             const hasStopPrice = type === 'STOP_LOSS_LIMIT' || type === 'OCO';
             const isOco = type === 'OCO';
@@ -377,7 +409,7 @@
                 stopLimitPriceField.value = '';
             }
             // TP/SL stays optional; the server enforces both-or-neither
-            const hasTpSl = type === 'LIMIT' || type === 'MARKET';
+            const hasTpSl = !isFutures && (type === 'LIMIT' || type === 'MARKET');
             ['takeProfitPrice', 'stopLossPrice'].forEach((id) => {
                 const field = document.getElementById(id);
                 field.disabled = !hasTpSl;
@@ -571,15 +603,22 @@
             }
         }
 
+        // Both the mode and the market toggles reset the view; colours follow the mode only
         function applyMode() {
             const mode = currentMode();
-            const display = MODE_DISPLAY[mode];
+            const market = currentMarket();
+            const isFutures = market === 'futures';
             modeGeneration++;
 
             document.body.className = `mode-${mode}`;
-            document.getElementById('modeBanner').textContent = display.banner;
-            document.getElementById('submitOrder').textContent = `Place ${display.label} order`;
+            document.getElementById('modeBanner').textContent = isFutures ? FUTURES_BANNERS[mode] : MODE_DISPLAY[mode].banner;
+            document.getElementById('submitOrder').textContent = `Place ${viewLabel(mode, market)} order`;
             document.getElementById('orderMode').value = mode;
+            document.getElementById('orderMarket').value = market;
+            // Balances and History are spot-only
+            document.getElementById('balancesSection').hidden = isFutures;
+            document.getElementById('historySection').hidden = isFutures;
+            updateOrderTypeFields();
 
             const resultDiv = document.getElementById('result');
             resultDiv.className = '';
@@ -596,11 +635,13 @@
                 document.getElementById(`${id}Helper`).textContent = '';
             });
 
-            loadBalances();
+            if (!isFutures) {
+                loadBalances();
+            }
             updateSymbolInfo(document.getElementById('symbol').value);
         }
 
-        document.querySelectorAll('input[name="modeSwitch"]').forEach((radio) => {
+        document.querySelectorAll('input[name="modeSwitch"], input[name="marketSwitch"]').forEach((radio) => {
             radio.addEventListener('change', applyMode);
         });
 
