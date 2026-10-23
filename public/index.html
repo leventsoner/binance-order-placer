@@ -214,6 +214,7 @@
                         <th scope="col">Price</th>
                         <th scope="col">Quantity</th>
                         <th scope="col">Filled</th>
+                        <th scope="col">Action</th>
                     </tr>
                 </thead>
                 <tbody id="ordersBody"></tbody>
@@ -248,6 +249,8 @@
                 banner: 'LIVE: orders spend real funds.'
             }
         };
+
+        const OPEN_ORDER_STATUSES = ['NEW', 'PARTIALLY_FILLED'];
 
         // Bumped on every mode switch; a load that finishes after a switch belongs to the old mode
         let modeGeneration = 0;
@@ -451,11 +454,26 @@
                 const { orders, trades } = result.data;
                 const emptyMessages = [];
 
+                const ordersBody = document.getElementById('ordersBody');
+                const mode = currentMode();
                 document.getElementById('ordersHeading').textContent = `Orders: ${symbol}`;
-                renderRows(document.getElementById('ordersBody'), orders.map((order) => [
+                renderRows(ordersBody, orders.map((order) => [
                     formatTime(order.time), order.side, order.type, order.status,
                     order.price, order.origQty, order.executedQty
                 ]));
+                // The rows belong to the symbol and mode they were loaded with, not to whatever the inputs say later
+                orders.forEach((order, index) => {
+                    const cell = document.createElement('td');
+                    if (OPEN_ORDER_STATUSES.includes(order.status)) {
+                        const button = document.createElement('button');
+                        button.type = 'button';
+                        button.textContent = 'Cancel';
+                        button.setAttribute('aria-label', `Cancel ${order.side} ${order.type} order ${order.orderId}`);
+                        button.addEventListener('click', () => cancelOrder(button, mode, symbol, order));
+                        cell.appendChild(button);
+                    }
+                    ordersBody.rows[index].appendChild(cell);
+                });
                 ordersTable.hidden = orders.length === 0;
                 if (orders.length === 0) {
                     emptyMessages.push(`No orders for ${symbol}.`);
@@ -486,6 +504,47 @@
         }
 
         document.getElementById('loadHistory').addEventListener('click', loadHistory);
+
+        // Like an order, a sent cancel shows its result even after a mode switch, labelled with its own mode
+        async function cancelOrder(button, mode, symbol, order) {
+            const label = MODE_DISPLAY[mode].label;
+            const generation = modeGeneration;
+
+            if (mode === 'live') {
+                const listNote = order.orderListId !== -1
+                    ? ' It is part of an order list, so every order in that list will be cancelled too.'
+                    : '';
+                if (!confirm(`Cancel LIVE ${order.side} ${order.type} order ${order.orderId} for ${symbol}?${listNote}`)) {
+                    return;
+                }
+            }
+
+            button.disabled = true;
+
+            try {
+                const response = await fetch('/cancel-order', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: new URLSearchParams({ mode, symbol, orderId: order.orderId }),
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    showResult('success', `Order Cancelled (${label})`, JSON.stringify(result.data, null, 2));
+                } else {
+                    showResult('error', `Error Cancelling Order (${label})`, result.error);
+                }
+            } catch (error) {
+                showResult('error', `Error (${label})`, error.message);
+            }
+
+            if (generation === modeGeneration) {
+                loadHistory();
+            }
+        }
 
         function applyMode() {
             const mode = currentMode();

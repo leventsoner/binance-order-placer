@@ -117,8 +117,8 @@ async function getOrderHistory(mode, symbol) {
     ]);
 
     return {
-        orders: orders.reverse().map(({ orderId, time, side, type, status, price, origQty, executedQty }) => (
-            { orderId, time, side, type, status, price, origQty, executedQty }
+        orders: orders.reverse().map(({ orderId, orderListId, time, side, type, status, price, origQty, executedQty }) => (
+            { orderId, orderListId, time, side, type, status, price, origQty, executedQty }
         )),
         trades: trades.reverse().map(({ id, orderId, time, isBuyer, price, qty, quoteQty, commission, commissionAsset }) => (
             { id, orderId, time, side: isBuyer ? 'BUY' : 'SELL', price, qty, quoteQty, commission, commissionAsset }
@@ -368,6 +368,13 @@ async function placeOrder(mode, body) {
     return signedRequest(mode, 'POST', ORDER_ENDPOINT, buildOrderParams(body));
 }
 
+// Binance cancels the whole order list when one of its orders is cancelled
+async function cancelOrder(mode, body) {
+    const symbol = parseSymbol(body.symbol);
+    const orderId = parseOrderId(body.orderId);
+    return signedRequest(mode, 'DELETE', ORDER_ENDPOINT, { symbol, orderId, recvWindow: 20000 });
+}
+
 // Query strings can repeat a key, which Express turns into an array, so require a plain string
 function parseMode(value) {
     if (typeof value !== 'string' || !Object.hasOwn(MODES, value)) {
@@ -391,6 +398,14 @@ function parsePositiveDecimal(value, label) {
     return value;
 }
 
+// Kept as a string: order IDs are sent to Binance exactly as received
+function parseOrderId(value) {
+    if (typeof value !== 'string' || !/^\d{1,20}$/.test(value) || BigInt(value) === 0n) {
+        throw new Error('Order ID must be a positive whole number');
+    }
+    return value;
+}
+
 // Binance error bodies carry `msg`; non-JSON failures (e.g. an HTML 5xx page) carry neither
 function errorMessage(error) {
     return error.msg || error.message || 'Binance request failed';
@@ -405,6 +420,16 @@ app.post('/place-order', async (req, res) => {
     try {
         const mode = parseMode(req.body.mode);
         const result = await placeOrder(mode, req.body);
+        res.json({ success: true, data: result });
+    } catch (error) {
+        res.json({ success: false, error: errorMessage(error) });
+    }
+});
+
+app.post('/cancel-order', async (req, res) => {
+    try {
+        const mode = parseMode(req.body.mode);
+        const result = await cancelOrder(mode, req.body);
         res.json({ success: true, data: result });
     } catch (error) {
         res.json({ success: false, error: errorMessage(error) });
