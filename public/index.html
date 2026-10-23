@@ -319,7 +319,7 @@
                     
                     // Update quantity input
                     const quantityInput = document.getElementById('quantity');
-                    quantityInput.step = Math.pow(10, -info.quantityPrecision).toString();
+                    quantityInput.step = info.stepSize;
                     quantityInput.min = info.minQty;
                     quantityInput.max = info.maxQty;
                     

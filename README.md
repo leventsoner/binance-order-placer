@@ -96,6 +96,8 @@ is sent to Binance.
 - Returns trading pair information including:
   - Quantity precision
   - Price precision
+  - Quantity step size
+  - Price tick size
   - Minimum quantity
   - Maximum quantity
   - Price limits

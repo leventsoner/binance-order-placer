@@ -158,6 +158,7 @@ async function getSymbolInfo(mode, symbol) {
             maxQty: lotSizeFilter.maxQty,
             minPrice: priceFilter.minPrice,
             maxPrice: priceFilter.maxPrice,
+            stepSize: lotSizeFilter.stepSize,
             tickSize: priceFilter.tickSize
         };
     } catch (error) {
@@ -165,10 +166,11 @@ async function getSymbolInfo(mode, symbol) {
     }
 }
 
-// Helper function to get decimal precision
+// Decimal places up to the step's `1`; whole-unit steps such as `1.00000000` or `10.00000000` give 0
 function getDecimalPrecision(stepSize) {
-    const decimalIndex = stepSize.indexOf('1') - 1;
-    return Math.abs(decimalIndex);
+    const dot = stepSize.indexOf('.');
+    const one = stepSize.indexOf('1');
+    return dot === -1 || one < dot ? 0 : one - dot;
 }
 
 // Binance rejects MARKET orders that carry price or timeInForce; only STOP_LOSS_LIMIT carries stopPrice
