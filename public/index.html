@@ -140,6 +140,7 @@
             <select id="type" name="type" required>
                 <option value="LIMIT">Limit</option>
                 <option value="MARKET">Market</option>
+                <option value="STOP_LOSS_LIMIT">Stop Limit</option>
             </select>
         </div>
 
@@ -162,6 +163,13 @@
             <label for="price">Price:</label>
             <input type="number" id="price" name="price" required>
             <small id="priceHelper" class="helper-text"></small>
+        </div>
+
+        <div class="form-group">
+            <label for="stopPrice">Stop Price:</label>
+            <input type="number" id="stopPrice" name="stopPrice" aria-describedby="stopPriceHelper stopPriceNote">
+            <small id="stopPriceHelper" class="helper-text"></small>
+            <small id="stopPriceNote" class="helper-text">Sell: stop below market price. Buy: stop above market price. Triggers a limit order at Price.</small>
         </div>
 
         <button type="submit" id="submitOrder">Place TESTNET order</button>
@@ -284,11 +292,19 @@
                     priceInput.step = info.tickSize;
                     priceInput.min = info.minPrice;
                     priceInput.max = info.maxPrice;
+
+                    // Stop price follows the same PRICE_FILTER as price
+                    const stopPriceInput = document.getElementById('stopPrice');
+                    stopPriceInput.step = info.tickSize;
+                    stopPriceInput.min = info.minPrice;
+                    stopPriceInput.max = info.maxPrice;
                     
                     // Update helper text
                     document.getElementById('quantityHelper').textContent = 
                         `Step: ${quantityInput.step} | Min: ${info.minQty} | Max: ${info.maxQty}`;
                     document.getElementById('priceHelper').textContent = 
+                        `Step: ${info.tickSize} | Min: ${info.minPrice} | Max: ${info.maxPrice}`;
+                    document.getElementById('stopPriceHelper').textContent =
                         `Step: ${info.tickSize} | Min: ${info.minPrice} | Max: ${info.maxPrice}`;
                 }
             } catch (error) {
@@ -296,14 +312,19 @@
             }
         }
 
-        // Disabled fields are left out of the form post, so MARKET orders omit them
+        // Disabled fields are left out of the form post, so each order type only sends its own fields
         function updateOrderTypeFields() {
-            const isLimit = document.getElementById('type').value === 'LIMIT';
+            const type = document.getElementById('type').value;
+            const isLimitStyle = type !== 'MARKET';
+            const isStopLimit = type === 'STOP_LOSS_LIMIT';
             ['price', 'timeInForce'].forEach((id) => {
                 const field = document.getElementById(id);
-                field.disabled = !isLimit;
-                field.required = isLimit;
+                field.disabled = !isLimitStyle;
+                field.required = isLimitStyle;
             });
+            const stopPriceField = document.getElementById('stopPrice');
+            stopPriceField.disabled = !isStopLimit;
+            stopPriceField.required = isStopLimit;
         }
 
         function renderRows(tbody, rows) {
@@ -452,7 +473,7 @@
             document.getElementById('loadHistory').disabled = false;
 
             // The testnet has its own filters, so the old mode's limits must not linger if the lookup fails
-            ['quantity', 'price'].forEach((id) => {
+            ['quantity', 'price', 'stopPrice'].forEach((id) => {
                 const input = document.getElementById(id);
                 ['step', 'min', 'max'].forEach((attribute) => input.removeAttribute(attribute));
                 document.getElementById(`${id}Helper`).textContent = '';

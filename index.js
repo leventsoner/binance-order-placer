@@ -162,16 +162,17 @@ function getDecimalPrecision(stepSize) {
     return Math.abs(decimalIndex);
 }
 
-// Binance rejects MARKET orders that carry price or timeInForce
+// Binance rejects MARKET orders that carry price or timeInForce; only STOP_LOSS_LIMIT carries stopPrice
 function buildOrderParams(body) {
-    if (body.type !== 'LIMIT' && body.type !== 'MARKET') {
-        throw new Error('Order type must be LIMIT or MARKET');
+    if (!['LIMIT', 'MARKET', 'STOP_LOSS_LIMIT'].includes(body.type)) {
+        throw new Error('Order type must be LIMIT, MARKET, or STOP_LOSS_LIMIT');
     }
     const symbol = parseSymbol(body.symbol);
     if (body.side !== 'BUY' && body.side !== 'SELL') {
         throw new Error('Side must be BUY or SELL');
     }
-    if (body.type === 'LIMIT' && !['GTC', 'IOC', 'FOK'].includes(body.timeInForce)) {
+    const isLimitStyle = body.type !== 'MARKET';
+    if (isLimitStyle && !['GTC', 'IOC', 'FOK'].includes(body.timeInForce)) {
         throw new Error('Time in force must be GTC, IOC, or FOK');
     }
 
@@ -183,9 +184,12 @@ function buildOrderParams(body) {
         recvWindow: 20000
     };
 
-    if (body.type === 'LIMIT') {
+    if (isLimitStyle) {
         orderParams.timeInForce = body.timeInForce;
         orderParams.price = parsePositiveDecimal(body.price, 'Price');
+    }
+    if (body.type === 'STOP_LOSS_LIMIT') {
+        orderParams.stopPrice = parsePositiveDecimal(body.stopPrice, 'Stop price');
     }
 
     return orderParams;
