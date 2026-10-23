@@ -281,10 +281,9 @@ function fromUnits(units, scale) {
 
 // The filled quantity, less any BUY fee taken in the base asset, rounded down to the LOT_SIZE step;
 // null when nothing is left. Binance charges SELL fees in the quote asset or BNB.
-function ocoQuantity(entry, side, symbolInfo) {
-    const stepSize = symbolInfo.filters.find(f => f.filterType === 'LOT_SIZE').stepSize;
+function ocoQuantity(entry, side, baseAsset, stepSize) {
     const baseFees = side === 'BUY'
-        ? entry.fills.filter(f => f.commissionAsset === symbolInfo.baseAsset).map(f => f.commission)
+        ? entry.fills.filter(f => f.commissionAsset === baseAsset).map(f => f.commission)
         : [];
     const scale = Math.max(...[entry.executedQty, stepSize, ...baseFees].map(decimalPlaces));
 
@@ -295,7 +294,8 @@ function ocoQuantity(entry, side, symbolInfo) {
 }
 
 // Not atomic: the entry can fill and the OCO still be rejected. Everything that can be checked
-// runs before the entry, and an entry left without its OCO is always reported as unprotected.
+// runs before the entry, and an entry left without its OCO is always reported, as unprotected only
+// when the OCO certainly was not placed.
 async function placeMarketWithTpSl(mode, body) {
     const entryParams = buildOrderParams(body);
     const takeProfitPrice = parsePositiveDecimal(body.takeProfitPrice, 'Take-profit price');
@@ -307,25 +307,43 @@ async function placeMarketWithTpSl(mode, body) {
     }
 
     const symbolInfo = await fetchSymbol(mode, symbol);
+    const lotSizeFilter = symbolInfo.filters.find(f => f.filterType === 'LOT_SIZE');
+    if (!lotSizeFilter) {
+        throw new Error(`${symbol} has no LOT_SIZE filter, so the take-profit/stop-loss quantity cannot be calculated; no order was placed.`);
+    }
     const entry = await signedRequest(mode, 'POST', ORDER_ENDPOINT, { ...entryParams, newOrderRespType: 'FULL' });
     if (Number(entry.executedQty) === 0) {
         throw new Error(`Market ${side} order ${entry.orderId} did not fill (status ${entry.status}); no take-profit or stop-loss was placed.`);
     }
 
+    const filled = `Market ${side} order ${entry.orderId} filled ${entry.executedQty} ${symbol}`;
+    const reason = (error) => errorMessage(error).replace(/\.$/, '');
+    const notPlaced = (error) => new Error(`${filled}, but the take-profit/stop-loss OCO was not placed: ${reason(error)}. This position has no take-profit or stop-loss.`);
+
+    let ocoParams;
     try {
-        const quantity = ocoQuantity(entry, side, symbolInfo);
+        const quantity = ocoQuantity(entry, side, symbolInfo.baseAsset, lotSizeFilter.stepSize);
         if (!quantity) {
             throw new Error('the quantity left after fees is zero');
         }
         const [aboveLeg, belowLeg] = tpSlLegs(side, takeProfitPrice, stopLossPrice);
-        const ocoParams = { symbol, side: isBuy ? 'SELL' : 'BUY', quantity, recvWindow: 20000 };
+        ocoParams = { symbol, side: isBuy ? 'SELL' : 'BUY', quantity, recvWindow: 20000 };
         Object.entries(aboveLeg).forEach(([key, value]) => { ocoParams[`above${key}`] = value; });
         Object.entries(belowLeg).forEach(([key, value]) => { ocoParams[`below${key}`] = value; });
+    } catch (error) {
+        throw notPlaced(error);
+    }
 
+    try {
         const oco = await signedRequest(mode, 'POST', ORDER_LIST_OCO_ENDPOINT, ocoParams);
         return { entry, oco };
     } catch (error) {
-        throw new Error(`Market ${side} order ${entry.orderId} filled ${entry.executedQty} ${symbol}, but the take-profit/stop-loss OCO was not placed: ${errorMessage(error).replace(/\.$/, '')}. This position has no take-profit or stop-loss.`);
+        // Only a Binance rejection proves the OCO was not placed. A timeout, a non-JSON reply, or
+        // -1007 (Binance's own "execution status unknown") can follow an OCO that was accepted.
+        if (error.msg && error.code !== -1007) {
+            throw notPlaced(error);
+        }
+        throw new Error(`${filled}, but the take-profit/stop-loss OCO request failed (${reason(error)}), so it may or may not have been placed. Check the ${symbol} orders in History before acting.`);
     }
 }
 
