@@ -8,6 +8,7 @@ const BINANCE_API_URL = "https://api.binance.com";
 const BINANCE_TESTNET_API_URL = 'https://testnet.binance.vision';
 const ORDER_ENDPOINT = "/api/v3/order";
 const ORDER_LIST_OCO_ENDPOINT = '/api/v3/orderList/oco';
+const ORDER_LIST_OTOCO_ENDPOINT = '/api/v3/orderList/otoco';
 const EXCHANGE_INFO_ENDPOINT = "/api/v3/exchangeInfo";
 const ACCOUNT_ENDPOINT = '/api/v3/account';
 const ALL_ORDERS_ENDPOINT = '/api/v3/allOrders';
@@ -97,10 +98,6 @@ async function signedRequest(mode, method, endpoint, params) {
     } catch (error) {
         throw error.response?.data || error;
     }
-}
-
-async function placeBinanceOrder(mode, orderParams) {
-    return signedRequest(mode, 'POST', ORDER_ENDPOINT, orderParams);
 }
 
 async function getAccountBalances(mode) {
@@ -222,6 +219,56 @@ function buildOcoParams(body) {
     return orderParams;
 }
 
+// LIMIT entry with a take-profit/stop-loss OCO placed once it fully fills; the SL is stop-market
+function buildOtocoParams(body) {
+    const entry = buildOrderParams(body);
+    const takeProfitPrice = parsePositiveDecimal(body.takeProfitPrice, 'Take-profit price');
+    const stopLossPrice = parsePositiveDecimal(body.stopLossPrice, 'Stop-loss price');
+
+    const takeProfitLeg = { Type: 'LIMIT_MAKER', Price: takeProfitPrice };
+    const stopLossLeg = { Type: 'STOP_LOSS', StopPrice: stopLossPrice };
+    // A BUY entry exits by selling above (TP) or below (SL) the market; a SELL entry is the mirror image
+    const [aboveLeg, belowLeg] = entry.side === 'BUY' ? [takeProfitLeg, stopLossLeg] : [stopLossLeg, takeProfitLeg];
+
+    const orderParams = {
+        symbol: entry.symbol,
+        workingType: 'LIMIT',
+        workingSide: entry.side,
+        workingPrice: entry.price,
+        workingQuantity: entry.quantity,
+        workingTimeInForce: entry.timeInForce,
+        pendingSide: entry.side === 'BUY' ? 'SELL' : 'BUY',
+        pendingQuantity: entry.quantity,
+        recvWindow: 20000
+    };
+    Object.entries(aboveLeg).forEach(([key, value]) => { orderParams[`pendingAbove${key}`] = value; });
+    Object.entries(belowLeg).forEach(([key, value]) => { orderParams[`pendingBelow${key}`] = value; });
+    return orderParams;
+}
+
+// An enabled but empty form input posts '', which counts as not provided
+function isProvided(value) {
+    return value !== undefined && value !== '';
+}
+
+// TP/SL never gets dropped silently: an order that carries it is either protected or rejected
+function buildOrderRequest(body) {
+    const hasTakeProfit = isProvided(body.takeProfitPrice);
+    if (hasTakeProfit !== isProvided(body.stopLossPrice)) {
+        throw new Error('Enter both a take-profit and a stop-loss price, or neither');
+    }
+    if (hasTakeProfit) {
+        if (body.type !== 'LIMIT') {
+            throw new Error('Take-profit and stop-loss prices are only supported on LIMIT orders');
+        }
+        return { endpoint: ORDER_LIST_OTOCO_ENDPOINT, params: buildOtocoParams(body) };
+    }
+    if (body.type === 'OCO') {
+        return { endpoint: ORDER_LIST_OCO_ENDPOINT, params: buildOcoParams(body) };
+    }
+    return { endpoint: ORDER_ENDPOINT, params: buildOrderParams(body) };
+}
+
 // Query strings can repeat a key, which Express turns into an array, so require a plain string
 function parseMode(value) {
     if (typeof value !== 'string' || !Object.hasOwn(MODES, value)) {
@@ -258,9 +305,8 @@ app.get('/', (req, res) => {
 app.post('/place-order', async (req, res) => {
     try {
         const mode = parseMode(req.body.mode);
-        const result = req.body.type === 'OCO'
-            ? await signedRequest(mode, 'POST', ORDER_LIST_OCO_ENDPOINT, buildOcoParams(req.body))
-            : await placeBinanceOrder(mode, buildOrderParams(req.body));
+        const { endpoint, params } = buildOrderRequest(req.body);
+        const result = await signedRequest(mode, 'POST', endpoint, params);
         res.json({ success: true, data: result });
     } catch (error) {
         res.json({ success: false, error: errorMessage(error) });

@@ -180,6 +180,19 @@
             <small id="stopLimitPriceNote" class="helper-text">OCO only: the stop leg's limit price. Price is the other leg's take-profit limit, and Time In Force applies to the stop leg.</small>
         </div>
 
+        <div class="form-group">
+            <label for="takeProfitPrice">Take Profit Price:</label>
+            <input type="number" id="takeProfitPrice" name="takeProfitPrice" aria-describedby="takeProfitPriceHelper tpSlNote">
+            <small id="takeProfitPriceHelper" class="helper-text"></small>
+        </div>
+
+        <div class="form-group">
+            <label for="stopLossPrice">Stop Loss Price:</label>
+            <input type="number" id="stopLossPrice" name="stopLossPrice" aria-describedby="stopLossPriceHelper tpSlNote">
+            <small id="stopLossPriceHelper" class="helper-text"></small>
+            <small id="tpSlNote" class="helper-text">Optional, Limit orders only. Fill in both or neither. Once the order fully fills, Binance places a take-profit limit at Take Profit Price and a stop-market order at Stop Loss Price for the same quantity; when one executes, the other is cancelled.</small>
+        </div>
+
         <button type="submit" id="submitOrder">Place TESTNET order</button>
     </form>
 
@@ -301,8 +314,8 @@
                     priceInput.min = info.minPrice;
                     priceInput.max = info.maxPrice;
 
-                    // Stop and stop limit prices follow the same PRICE_FILTER as price
-                    ['stopPrice', 'stopLimitPrice'].forEach((id) => {
+                    // The other price inputs follow the same PRICE_FILTER as price
+                    ['stopPrice', 'stopLimitPrice', 'takeProfitPrice', 'stopLossPrice'].forEach((id) => {
                         const input = document.getElementById(id);
                         input.step = info.tickSize;
                         input.min = info.minPrice;
@@ -314,10 +327,10 @@
                         `Step: ${quantityInput.step} | Min: ${info.minQty} | Max: ${info.maxQty}`;
                     document.getElementById('priceHelper').textContent = 
                         `Step: ${info.tickSize} | Min: ${info.minPrice} | Max: ${info.maxPrice}`;
-                    document.getElementById('stopPriceHelper').textContent =
-                        `Step: ${info.tickSize} | Min: ${info.minPrice} | Max: ${info.maxPrice}`;
-                    document.getElementById('stopLimitPriceHelper').textContent =
-                        `Step: ${info.tickSize} | Min: ${info.minPrice} | Max: ${info.maxPrice}`;
+                    ['stopPriceHelper', 'stopLimitPriceHelper', 'takeProfitPriceHelper', 'stopLossPriceHelper'].forEach((id) => {
+                        document.getElementById(id).textContent =
+                            `Step: ${info.tickSize} | Min: ${info.minPrice} | Max: ${info.maxPrice}`;
+                    });
                 }
             } catch (error) {
                 console.error('Error fetching symbol info:', error);
@@ -341,6 +354,10 @@
             const stopLimitPriceField = document.getElementById('stopLimitPrice');
             stopLimitPriceField.disabled = !isOco;
             stopLimitPriceField.required = isOco;
+            // TP/SL stays optional; the server enforces both-or-neither
+            ['takeProfitPrice', 'stopLossPrice'].forEach((id) => {
+                document.getElementById(id).disabled = type !== 'LIMIT';
+            });
         }
 
         function renderRows(tbody, rows) {
@@ -489,7 +506,7 @@
             document.getElementById('loadHistory').disabled = false;
 
             // The testnet has its own filters, so the old mode's limits must not linger if the lookup fails
-            ['quantity', 'price', 'stopPrice', 'stopLimitPrice'].forEach((id) => {
+            ['quantity', 'price', 'stopPrice', 'stopLimitPrice', 'takeProfitPrice', 'stopLossPrice'].forEach((id) => {
                 const input = document.getElementById(id);
                 ['step', 'min', 'max'].forEach((attribute) => input.removeAttribute(attribute));
                 document.getElementById(`${id}Helper`).textContent = '';
