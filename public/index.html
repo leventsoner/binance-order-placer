@@ -141,6 +141,7 @@
                 <option value="LIMIT">Limit</option>
                 <option value="MARKET">Market</option>
                 <option value="STOP_LOSS_LIMIT">Stop Limit</option>
+                <option value="OCO">OCO</option>
             </select>
         </div>
 
@@ -169,7 +170,14 @@
             <label for="stopPrice">Stop Price:</label>
             <input type="number" id="stopPrice" name="stopPrice" aria-describedby="stopPriceHelper stopPriceNote">
             <small id="stopPriceHelper" class="helper-text"></small>
-            <small id="stopPriceNote" class="helper-text">Sell: stop below market price. Buy: stop above market price. Triggers a limit order at Price.</small>
+            <small id="stopPriceNote" class="helper-text">Sell: stop below market price. Buy: stop above market price. Stop Limit places a limit order at Price when triggered; OCO places it at Stop Limit Price.</small>
+        </div>
+
+        <div class="form-group">
+            <label for="stopLimitPrice">Stop Limit Price:</label>
+            <input type="number" id="stopLimitPrice" name="stopLimitPrice" aria-describedby="stopLimitPriceHelper stopLimitPriceNote">
+            <small id="stopLimitPriceHelper" class="helper-text"></small>
+            <small id="stopLimitPriceNote" class="helper-text">OCO only: the stop leg's limit price. Price is the other leg's take-profit limit, and Time In Force applies to the stop leg.</small>
         </div>
 
         <button type="submit" id="submitOrder">Place TESTNET order</button>
@@ -293,11 +301,13 @@
                     priceInput.min = info.minPrice;
                     priceInput.max = info.maxPrice;
 
-                    // Stop price follows the same PRICE_FILTER as price
-                    const stopPriceInput = document.getElementById('stopPrice');
-                    stopPriceInput.step = info.tickSize;
-                    stopPriceInput.min = info.minPrice;
-                    stopPriceInput.max = info.maxPrice;
+                    // Stop and stop limit prices follow the same PRICE_FILTER as price
+                    ['stopPrice', 'stopLimitPrice'].forEach((id) => {
+                        const input = document.getElementById(id);
+                        input.step = info.tickSize;
+                        input.min = info.minPrice;
+                        input.max = info.maxPrice;
+                    });
                     
                     // Update helper text
                     document.getElementById('quantityHelper').textContent = 
@@ -305,6 +315,8 @@
                     document.getElementById('priceHelper').textContent = 
                         `Step: ${info.tickSize} | Min: ${info.minPrice} | Max: ${info.maxPrice}`;
                     document.getElementById('stopPriceHelper').textContent =
+                        `Step: ${info.tickSize} | Min: ${info.minPrice} | Max: ${info.maxPrice}`;
+                    document.getElementById('stopLimitPriceHelper').textContent =
                         `Step: ${info.tickSize} | Min: ${info.minPrice} | Max: ${info.maxPrice}`;
                 }
             } catch (error) {
@@ -316,15 +328,19 @@
         function updateOrderTypeFields() {
             const type = document.getElementById('type').value;
             const isLimitStyle = type !== 'MARKET';
-            const isStopLimit = type === 'STOP_LOSS_LIMIT';
+            const hasStopPrice = type === 'STOP_LOSS_LIMIT' || type === 'OCO';
+            const isOco = type === 'OCO';
             ['price', 'timeInForce'].forEach((id) => {
                 const field = document.getElementById(id);
                 field.disabled = !isLimitStyle;
                 field.required = isLimitStyle;
             });
             const stopPriceField = document.getElementById('stopPrice');
-            stopPriceField.disabled = !isStopLimit;
-            stopPriceField.required = isStopLimit;
+            stopPriceField.disabled = !hasStopPrice;
+            stopPriceField.required = hasStopPrice;
+            const stopLimitPriceField = document.getElementById('stopLimitPrice');
+            stopLimitPriceField.disabled = !isOco;
+            stopLimitPriceField.required = isOco;
         }
 
         function renderRows(tbody, rows) {
@@ -473,7 +489,7 @@
             document.getElementById('loadHistory').disabled = false;
 
             // The testnet has its own filters, so the old mode's limits must not linger if the lookup fails
-            ['quantity', 'price', 'stopPrice'].forEach((id) => {
+            ['quantity', 'price', 'stopPrice', 'stopLimitPrice'].forEach((id) => {
                 const input = document.getElementById(id);
                 ['step', 'min', 'max'].forEach((attribute) => input.removeAttribute(attribute));
                 document.getElementById(`${id}Helper`).textContent = '';

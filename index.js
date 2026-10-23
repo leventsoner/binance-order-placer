@@ -7,6 +7,7 @@ const bodyParser = require('body-parser');
 const BINANCE_API_URL = "https://api.binance.com";
 const BINANCE_TESTNET_API_URL = 'https://testnet.binance.vision';
 const ORDER_ENDPOINT = "/api/v3/order";
+const ORDER_LIST_OCO_ENDPOINT = '/api/v3/orderList/oco';
 const EXCHANGE_INFO_ENDPOINT = "/api/v3/exchangeInfo";
 const ACCOUNT_ENDPOINT = '/api/v3/account';
 const ALL_ORDERS_ENDPOINT = '/api/v3/allOrders';
@@ -165,7 +166,7 @@ function getDecimalPrecision(stepSize) {
 // Binance rejects MARKET orders that carry price or timeInForce; only STOP_LOSS_LIMIT carries stopPrice
 function buildOrderParams(body) {
     if (!['LIMIT', 'MARKET', 'STOP_LOSS_LIMIT'].includes(body.type)) {
-        throw new Error('Order type must be LIMIT, MARKET, or STOP_LOSS_LIMIT');
+        throw new Error('Order type must be LIMIT, MARKET, STOP_LOSS_LIMIT, or OCO');
     }
     const symbol = parseSymbol(body.symbol);
     if (body.side !== 'BUY' && body.side !== 'SELL') {
@@ -192,6 +193,32 @@ function buildOrderParams(body) {
         orderParams.stopPrice = parsePositiveDecimal(body.stopPrice, 'Stop price');
     }
 
+    return orderParams;
+}
+
+// Classic OCO: a LIMIT_MAKER take-profit leg at price and a STOP_LOSS_LIMIT leg
+// triggered at stopPrice that places a limit at stopLimitPrice. A SELL takes profit
+// above the market and stops below it; a BUY is the mirror image.
+function buildOcoParams(body) {
+    const symbol = parseSymbol(body.symbol);
+    if (body.side !== 'BUY' && body.side !== 'SELL') {
+        throw new Error('Side must be BUY or SELL');
+    }
+    if (!['GTC', 'IOC', 'FOK'].includes(body.timeInForce)) {
+        throw new Error('Time in force must be GTC, IOC, or FOK');
+    }
+    const quantity = parsePositiveDecimal(body.quantity, 'Quantity');
+    const price = parsePositiveDecimal(body.price, 'Price');
+    const stopPrice = parsePositiveDecimal(body.stopPrice, 'Stop price');
+    const stopLimitPrice = parsePositiveDecimal(body.stopLimitPrice, 'Stop limit price');
+
+    const takeProfitLeg = { Type: 'LIMIT_MAKER', Price: price };
+    const stopLeg = { Type: 'STOP_LOSS_LIMIT', StopPrice: stopPrice, Price: stopLimitPrice, TimeInForce: body.timeInForce };
+    const [aboveLeg, belowLeg] = body.side === 'SELL' ? [takeProfitLeg, stopLeg] : [stopLeg, takeProfitLeg];
+
+    const orderParams = { symbol, side: body.side, quantity, recvWindow: 20000 };
+    Object.entries(aboveLeg).forEach(([key, value]) => { orderParams[`above${key}`] = value; });
+    Object.entries(belowLeg).forEach(([key, value]) => { orderParams[`below${key}`] = value; });
     return orderParams;
 }
 
@@ -231,7 +258,9 @@ app.get('/', (req, res) => {
 app.post('/place-order', async (req, res) => {
     try {
         const mode = parseMode(req.body.mode);
-        const result = await placeBinanceOrder(mode, buildOrderParams(req.body));
+        const result = req.body.type === 'OCO'
+            ? await signedRequest(mode, 'POST', ORDER_LIST_OCO_ENDPOINT, buildOcoParams(req.body))
+            : await placeBinanceOrder(mode, buildOrderParams(req.body));
         res.json({ success: true, data: result });
     } catch (error) {
         res.json({ success: false, error: errorMessage(error) });
