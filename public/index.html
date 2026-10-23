@@ -418,8 +418,9 @@
 
         document.getElementById('refreshBalances').addEventListener('click', loadBalances);
 
-        async function loadHistory() {
-            const symbol = document.getElementById('symbol').value.trim();
+        // A cancel passes the symbol its row was loaded with; the button reads the input
+        async function loadHistory(symbolOverride) {
+            const symbol = symbolOverride ?? document.getElementById('symbol').value.trim();
             const status = document.getElementById('historyStatus');
             const ordersTable = document.getElementById('ordersTable');
             const tradesTable = document.getElementById('tradesTable');
@@ -503,7 +504,7 @@
             }
         }
 
-        document.getElementById('loadHistory').addEventListener('click', loadHistory);
+        document.getElementById('loadHistory').addEventListener('click', () => loadHistory());
 
         // Like an order, a sent cancel shows its result even after a mode switch, labelled with its own mode
         async function cancelOrder(button, mode, symbol, order) {
@@ -542,7 +543,7 @@
             }
 
             if (generation === modeGeneration) {
-                loadHistory();
+                loadHistory(symbol);
             }
         }
 
