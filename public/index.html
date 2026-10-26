@@ -94,6 +94,14 @@
         #modeSwitch input, #marketSwitch input {
             width: auto;
         }
+        #showSmallBalancesLabel {
+            display: inline;
+        }
+        #showSmallBalances {
+            width: auto;
+            margin: 0 5px 0 0;
+            vertical-align: middle;
+        }
     </style>
 </head>
 <body class="mode-testnet">
@@ -118,6 +126,10 @@
 
     <section id="balancesSection" aria-labelledby="balancesHeading">
         <h2 id="balancesHeading">Balances</h2>
+        <p>
+            <input type="checkbox" id="showSmallBalances" autocomplete="off">
+            <label for="showSmallBalances" id="showSmallBalancesLabel">Show all balances</label>
+        </p>
         <p id="balancesStatus" aria-live="polite"></p>
         <table id="balancesTable" class="data-table" hidden>
             <thead>
@@ -271,9 +283,21 @@
 
         const OPEN_ORDER_STATUSES = ['NEW', 'PARTIALLY_FILLED'];
         const SUBMIT_COOLDOWN_MS = 1000;
+        const SMALL_BALANCE_USD = 10;
+        // Testnet balances are mostly unpriced filler coins, so testnet shows only these by default
+        const TESTNET_SHOWN_ASSETS = ['BTC', 'ETH', 'XRP', 'BCH', 'BNB', 'SOL'];
+        const SHOW_ALL_LABELS = {
+            live: `Show balances under ${SMALL_BALANCE_USD} USD`,
+            testnet: 'Show all balances'
+        };
 
         // Bumped on every mode switch; a load that finishes after a switch belongs to the old mode
         let modeGeneration = 0;
+
+        // The last loaded balances, so the small-balances checkbox can re-render without a refetch.
+        // Null while loading or after a failure, so the checkbox cannot replace a loading or error message.
+        let loadedBalances = null;
+        let loadedBalancesMode = null;
 
         function currentMode() {
             return document.querySelector('input[name="modeSwitch"]:checked').value;
@@ -431,19 +455,63 @@
             }));
         }
 
+        // Live hides balances under 10 USD (unpriced assets count as small); testnet keeps only TESTNET_SHOWN_ASSETS
+        function isDefaultShown(mode, { asset, usdValue }) {
+            return mode === 'testnet'
+                ? TESTNET_SHOWN_ASSETS.includes(asset)
+                : usdValue !== null && usdValue >= SMALL_BALANCE_USD;
+        }
+
+        function renderBalances() {
+            if (loadedBalances === null) {
+                return;
+            }
+
+            const status = document.getElementById('balancesStatus');
+            const table = document.getElementById('balancesTable');
+            const showSmall = document.getElementById('showSmallBalances').checked;
+            const isTestnet = loadedBalancesMode === 'testnet';
+            const shown = showSmall
+                ? loadedBalances
+                : loadedBalances.filter((balance) => isDefaultShown(loadedBalancesMode, balance));
+            const hiddenCount = loadedBalances.length - shown.length;
+            const hiddenNoun = hiddenCount === 1 ? 'balance' : 'balances';
+
+            if (loadedBalances.length === 0) {
+                table.hidden = true;
+                status.textContent = 'No non-zero spot balances.';
+            } else if (shown.length === 0) {
+                table.hidden = true;
+                status.textContent = isTestnet
+                    ? `No ${TESTNET_SHOWN_ASSETS.join(', ')} balances (${hiddenCount} hidden).`
+                    : `No spot balances worth ${SMALL_BALANCE_USD} USD or more (${hiddenCount} hidden).`;
+            } else {
+                renderRows(document.getElementById('balancesBody'), shown.map(({ asset, free, locked }) => [asset, free, locked]));
+                table.hidden = false;
+                if (hiddenCount === 0) {
+                    status.textContent = '';
+                } else {
+                    status.textContent = isTestnet
+                        ? `${hiddenCount} other ${hiddenNoun} hidden.`
+                        : `${hiddenCount} ${hiddenNoun} under ${SMALL_BALANCE_USD} USD hidden.`;
+                }
+            }
+        }
+
         async function loadBalances() {
             const status = document.getElementById('balancesStatus');
             const table = document.getElementById('balancesTable');
-            const body = document.getElementById('balancesBody');
             const refreshButton = document.getElementById('refreshBalances');
             const generation = modeGeneration;
+            const mode = currentMode();
 
             refreshButton.disabled = true;
+            loadedBalances = null;
             table.hidden = true;
             status.textContent = 'Loading balances...';
 
             try {
-                const response = await fetch(`/balances?mode=${currentMode()}`);
+                const response = await fetch(`/balances?mode=${mode}`);
                 const result = await response.json();
 
                 if (generation !== modeGeneration) {
@@ -452,13 +520,10 @@
                 if (!result.success) {
                     table.hidden = true;
                     status.textContent = result.error;
-                } else if (result.data.length === 0) {
-                    table.hidden = true;
-                    status.textContent = 'No non-zero spot balances.';
                 } else {
-                    renderRows(body, result.data.map(({ asset, free, locked }) => [asset, free, locked]));
-                    table.hidden = false;
-                    status.textContent = '';
+                    loadedBalances = result.data;
+                    loadedBalancesMode = mode;
+                    renderBalances();
                 }
             } catch (error) {
                 if (generation === modeGeneration) {
@@ -473,6 +538,7 @@
         }
 
         document.getElementById('refreshBalances').addEventListener('click', loadBalances);
+        document.getElementById('showSmallBalances').addEventListener('change', renderBalances);
 
         // A cancel passes the symbol its row was loaded with; the button reads the input
         async function loadHistory(symbolOverride) {
@@ -615,6 +681,7 @@
             document.getElementById('submitOrder').textContent = `Place ${viewLabel(mode, market)} order`;
             document.getElementById('orderMode').value = mode;
             document.getElementById('orderMarket').value = market;
+            document.getElementById('showSmallBalancesLabel').textContent = SHOW_ALL_LABELS[mode];
             // Balances and History are spot-only
             document.getElementById('balancesSection').hidden = isFutures;
             document.getElementById('historySection').hidden = isFutures;

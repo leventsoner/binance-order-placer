@@ -13,6 +13,7 @@ const EXCHANGE_INFO_ENDPOINT = "/api/v3/exchangeInfo";
 const ACCOUNT_ENDPOINT = '/api/v3/account';
 const ALL_ORDERS_ENDPOINT = '/api/v3/allOrders';
 const MY_TRADES_ENDPOINT = '/api/v3/myTrades';
+const TICKER_PRICE_ENDPOINT = '/api/v3/ticker/price';
 const HISTORY_LIMIT = 20;
 
 const BINANCE_FUTURES_API_URL = 'https://fapi.binance.com';
@@ -125,11 +126,31 @@ async function signedRequest(mode, method, endpoint, params) {
     }
 }
 
+// Public and unsigned; one request covers every pair, and the testnet has its own prices
+async function fetchUsdtPrices(mode) {
+    let response;
+    try {
+        response = await axios.get(`${mode.baseUrl}${TICKER_PRICE_ENDPOINT}`);
+    } catch (error) {
+        throw error.response?.data || error;
+    }
+    return new Map(response.data.map(({ symbol, price }) => [symbol, price]));
+}
+
+// usdValue is null for an asset with no <ASSET>USDT pair; USDT itself is worth 1
+function usdValue(asset, free, locked, prices) {
+    const price = asset === 'USDT' ? 1 : prices.get(`${asset}USDT`);
+    return price === undefined ? null : (Number(free) + Number(locked)) * Number(price);
+}
+
 async function getAccountBalances(mode) {
-    const account = await signedRequest(mode, 'GET', ACCOUNT_ENDPOINT, { recvWindow: 20000 });
+    const [account, prices] = await Promise.all([
+        signedRequest(mode, 'GET', ACCOUNT_ENDPOINT, { recvWindow: 20000 }),
+        fetchUsdtPrices(mode)
+    ]);
     return account.balances
         .filter(({ free, locked }) => Number(free) > 0 || Number(locked) > 0)
-        .map(({ asset, free, locked }) => ({ asset, free, locked }))
+        .map(({ asset, free, locked }) => ({ asset, free, locked, usdValue: usdValue(asset, free, locked, prices) }))
         .sort((a, b) => a.asset.localeCompare(b.asset));
 }
 
