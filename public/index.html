@@ -215,7 +215,7 @@
             <label for="stopLossPrice">Stop Loss Price:</label>
             <input type="number" id="stopLossPrice" name="stopLossPrice" aria-describedby="stopLossPriceHelper tpSlNote">
             <small id="stopLossPriceHelper" class="helper-text"></small>
-            <small id="tpSlNote" class="helper-text">Optional, Limit and Market orders only. Fill in both or neither. Limit: once the order fully fills, Binance places a take-profit limit at Take Profit Price and a stop-market order at Stop Loss Price for the same quantity. Market: after the order fills, a take-profit limit and stop-market pair is placed for the filled quantity (less any fee taken in the bought coin). When one executes, the other is cancelled. For Market these are two separate requests: if the second is rejected, the order stays filled without TP/SL and the error says so.</small>
+            <small id="tpSlNote" class="helper-text"></small>
         </div>
 
         <button type="submit" id="submitOrder">Place TESTNET order</button>
@@ -279,6 +279,11 @@
         const FUTURES_BANNERS = {
             testnet: "TESTNET FUTURES: orders go to Binance's USD-M futures testnet at 3x isolated leverage. No real funds.",
             live: 'LIVE FUTURES: orders open 3x isolated leveraged USD-M positions with real funds.'
+        };
+
+        const TP_SL_NOTES = {
+            spot: 'Optional, Limit and Market orders only. Fill in both or neither. Limit: once the order fully fills, Binance places a take-profit limit at Take Profit Price and a stop-market order at Stop Loss Price for the same quantity. Market: after the order fills, a take-profit limit and stop-market pair is placed for the filled quantity (less any fee taken in the bought coin). When one executes, the other is cancelled. For Market these are two separate requests: if the second is rejected, the order stays filled without TP/SL and the error says so.',
+            futures: "Optional, Limit and Market orders only. Fill in both or neither. Right after the order, two separate reduce-only orders are placed for the order's quantity: a stop-market at Stop Loss Price and a take-profit-market at Take Profit Price, both triggered by the last price. A Limit order's take-profit or stop-loss is placed straight away, so it can trigger before the order fills, and then closes nothing. If either one is rejected, the order stays placed and the error says what is missing. Neither is cancelled when the other triggers: in testing, Binance left both open after the position was closed by hand. This page cannot cancel futures orders, so cancel leftovers on Binance."
         };
 
         const OPEN_ORDER_STATUSES = ['NEW', 'PARTIALLY_FILLED'];
@@ -401,7 +406,7 @@
 
         // Disabled fields are left out of the form post, so each order type only sends its own fields.
         // A disabled stop or TP/SL field is also emptied, so it never shows a protective price that will not be sent.
-        // Futures offers only Limit and Market without TP/SL; a selected spot-only type falls back to Limit.
+        // Futures offers only Limit and Market, both with optional TP/SL; a selected spot-only type falls back to Limit.
         function updateOrderTypeFields() {
             const isFutures = currentMarket() === 'futures';
             const typeField = document.getElementById('type');
@@ -433,7 +438,8 @@
                 stopLimitPriceField.value = '';
             }
             // TP/SL stays optional; the server enforces both-or-neither
-            const hasTpSl = !isFutures && (type === 'LIMIT' || type === 'MARKET');
+            document.getElementById('tpSlNote').textContent = TP_SL_NOTES[isFutures ? 'futures' : 'spot'];
+            const hasTpSl = type === 'LIMIT' || type === 'MARKET';
             ['takeProfitPrice', 'stopLossPrice'].forEach((id) => {
                 const field = document.getElementById(id);
                 field.disabled = !hasTpSl;

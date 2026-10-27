@@ -19,9 +19,11 @@ const HISTORY_LIMIT = 20;
 const BINANCE_FUTURES_API_URL = 'https://fapi.binance.com';
 const BINANCE_FUTURES_TESTNET_API_URL = 'https://testnet.binancefuture.com';
 const FUTURES_ORDER_ENDPOINT = '/fapi/v1/order';
+const FUTURES_ALGO_ORDER_ENDPOINT = '/fapi/v1/algoOrder';
 const FUTURES_EXCHANGE_INFO_ENDPOINT = '/fapi/v1/exchangeInfo';
 const FUTURES_POSITION_MODE_ENDPOINT = '/fapi/v1/positionSide/dual';
 const FUTURES_MULTI_ASSETS_ENDPOINT = '/fapi/v1/multiAssetsMargin';
+const FUTURES_SYMBOL_CONFIG_ENDPOINT = '/fapi/v1/symbolConfig';
 const FUTURES_MARGIN_TYPE_ENDPOINT = '/fapi/v1/marginType';
 const FUTURES_LEVERAGE_ENDPOINT = '/fapi/v1/leverage';
 const FUTURES_LEVERAGE = 3;
@@ -440,17 +442,61 @@ async function placeOrder(mode, body) {
     return signedRequest(mode, 'POST', ORDER_ENDPOINT, buildOrderParams(body));
 }
 
+// Futures TP/SL prices, or null when neither is given. A LIMIT entry must sit between them.
+function parseFuturesTpSl(body, orderParams) {
+    const hasTakeProfit = isProvided(body.takeProfitPrice);
+    if (hasTakeProfit !== isProvided(body.stopLossPrice)) {
+        throw new Error('Enter both a take-profit and a stop-loss price, or neither');
+    }
+    if (!hasTakeProfit) {
+        return null;
+    }
+    const takeProfitPrice = parsePositiveDecimal(body.takeProfitPrice, 'Take-profit price');
+    const stopLossPrice = parsePositiveDecimal(body.stopLossPrice, 'Stop-loss price');
+    const { side, type, price } = orderParams;
+    const isBuy = side === 'BUY';
+    const [low, high] = isBuy ? [stopLossPrice, takeProfitPrice] : [takeProfitPrice, stopLossPrice];
+    if (Number(low) >= Number(high)) {
+        throw new Error(`For a ${side} order the take-profit price must be ${isBuy ? 'above' : 'below'} the stop-loss price`);
+    }
+    if (type === 'LIMIT' && (Number(price) <= Number(low) || Number(price) >= Number(high))) {
+        throw new Error(`For a LIMIT ${side} order the price must be between the stop-loss and take-profit prices`);
+    }
+    return { takeProfitPrice, stopLossPrice };
+}
+
+// Only a Binance rejection proves an exit leg was not placed. A timeout, a non-JSON reply, -1006
+// or -1007 (Binance's own "execution status unknown") can follow an order that was accepted.
+async function placeFuturesExit(futures, params) {
+    try {
+        return { status: 'placed', order: await signedRequest(futures, 'POST', FUTURES_ALGO_ORDER_ENDPOINT, params) };
+    } catch (error) {
+        const isUnknown = !error.msg || error.code === -1006 || error.code === -1007;
+        return { status: isUnknown ? 'unknown' : 'not placed', error };
+    }
+}
+
+function describeExit(label, exit) {
+    const reason = exit.error && errorMessage(exit.error).replace(/\.$/, '');
+    if (exit.status === 'placed') {
+        return `${label} placed (algoId ${exit.order.algoId})`;
+    }
+    return exit.status === 'unknown'
+        ? `${label} request failed (${reason}), so it may or may not have been placed`
+        : `${label} not placed: ${reason}`;
+}
+
 // Every futures order runs at 3x isolated. Symbol settings are set when they differ; account-wide
 // settings are never changed. Any failure before the order request means no order was placed.
+// TP and SL are separate reduce-only conditional orders placed right after the entry (Binance's
+// futures API cannot place them on fill), so a failed leg is always reported, never dropped.
 async function placeFuturesOrder(mode, body) {
-    if (isProvided(body.takeProfitPrice) || isProvided(body.stopLossPrice)) {
-        throw new Error('Take-profit and stop-loss are not supported on futures yet');
-    }
     if (body.type !== 'LIMIT' && body.type !== 'MARKET') {
         throw new Error('Futures supports only LIMIT and MARKET orders');
     }
     const orderParams = { ...buildOrderParams(body), newOrderRespType: 'RESULT' };
-    const { symbol } = orderParams;
+    const tpSl = parseFuturesTpSl(body, orderParams);
+    const { symbol, side } = orderParams;
     const { futures } = mode;
     const notPlaced = (error) => new Error(`${errorMessage(error).replace(/\.$/, '')}; no order was placed.`);
 
@@ -464,11 +510,16 @@ async function placeFuturesOrder(mode, body) {
         if (assetsMode.multiAssetsMargin) {
             throw new Error('Your futures account is in Multi-Assets mode, which does not allow isolated margin. Switch it to Single-Asset mode on Binance');
         }
-        try {
-            await signedRequest(futures, 'POST', FUTURES_MARGIN_TYPE_ENDPOINT, { symbol, marginType: FUTURES_MARGIN_TYPE, recvWindow: 20000 });
-        } catch (error) {
-            if (error.code !== NO_NEED_TO_CHANGE_MARGIN_TYPE) {
-                throw error;
+        // Binance rejects any margin-type request (-4067) while TP/SL algo orders are open, even one
+        // that changes nothing, so it is only sent when the symbol is not isolated yet
+        const [symbolConfig] = await signedRequest(futures, 'GET', FUTURES_SYMBOL_CONFIG_ENDPOINT, { symbol, recvWindow: 20000 });
+        if (symbolConfig?.marginType !== FUTURES_MARGIN_TYPE) {
+            try {
+                await signedRequest(futures, 'POST', FUTURES_MARGIN_TYPE_ENDPOINT, { symbol, marginType: FUTURES_MARGIN_TYPE, recvWindow: 20000 });
+            } catch (error) {
+                if (error.code !== NO_NEED_TO_CHANGE_MARGIN_TYPE) {
+                    throw error;
+                }
             }
         }
         const leverageResult = await signedRequest(futures, 'POST', FUTURES_LEVERAGE_ENDPOINT, { symbol, leverage: FUTURES_LEVERAGE, recvWindow: 20000 });
@@ -478,7 +529,41 @@ async function placeFuturesOrder(mode, body) {
     }
 
     const order = await signedRequest(futures, 'POST', FUTURES_ORDER_ENDPOINT, orderParams);
-    return { leverage, marginType: FUTURES_MARGIN_TYPE, order };
+    if (!tpSl) {
+        return { leverage, marginType: FUTURES_MARGIN_TYPE, order };
+    }
+
+    // Futures fees are charged in the margin asset, so the whole quantity is covered
+    const quantity = body.type === 'MARKET' ? order.executedQty : orderParams.quantity;
+    if (Number(quantity) === 0) {
+        throw new Error(`Market ${side} order ${order.orderId} did not fill (status ${order.status}); no take-profit or stop-loss was placed.`);
+    }
+    const exitParams = {
+        algoType: 'CONDITIONAL',
+        symbol,
+        side: side === 'BUY' ? 'SELL' : 'BUY',
+        quantity,
+        reduceOnly: 'true',
+        workingType: 'CONTRACT_PRICE',
+        recvWindow: 20000
+    };
+    const stopLoss = await placeFuturesExit(futures, { ...exitParams, type: 'STOP_MARKET', triggerPrice: tpSl.stopLossPrice });
+    const takeProfit = await placeFuturesExit(futures, { ...exitParams, type: 'TAKE_PROFIT_MARKET', triggerPrice: tpSl.takeProfitPrice });
+
+    if (stopLoss.status === 'placed' && takeProfit.status === 'placed') {
+        return { leverage, marginType: FUTURES_MARGIN_TYPE, order, stopLoss: stopLoss.order, takeProfit: takeProfit.order };
+    }
+    let advice;
+    if (stopLoss.status === 'unknown' || takeProfit.status === 'unknown') {
+        advice = 'Check the open orders on Binance before acting.';
+    } else if (stopLoss.status === 'placed') {
+        advice = 'This position has no take-profit.';
+    } else if (takeProfit.status === 'placed') {
+        advice = 'This position has no stop-loss.';
+    } else {
+        advice = 'This position has no take-profit or stop-loss.';
+    }
+    throw new Error(`${body.type} ${side} order ${order.orderId} for ${quantity} ${symbol} was placed. ${describeExit('Stop-loss', stopLoss)}. ${describeExit('Take-profit', takeProfit)}. ${advice}`);
 }
 
 // Binance cancels the whole order list when one of its orders is cancelled
