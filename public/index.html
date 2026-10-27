@@ -239,7 +239,7 @@
                         <th scope="col">Price</th>
                         <th scope="col">Quantity</th>
                         <th scope="col">Filled</th>
-                        <th scope="col">Action</th>
+                        <th scope="col" id="ordersActionHeader">Action</th>
                     </tr>
                 </thead>
                 <tbody id="ordersBody"></tbody>
@@ -259,6 +259,22 @@
                     </tr>
                 </thead>
                 <tbody id="tradesBody"></tbody>
+            </table>
+        </div>
+        <div id="algoOrdersTable" hidden>
+            <h3 id="algoOrdersHeading"></h3>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th scope="col">Time</th>
+                        <th scope="col">Side</th>
+                        <th scope="col">Type</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Trigger price</th>
+                        <th scope="col">Quantity</th>
+                    </tr>
+                </thead>
+                <tbody id="algoOrdersBody"></tbody>
             </table>
         </div>
     </section>
@@ -552,13 +568,16 @@
             const status = document.getElementById('historyStatus');
             const ordersTable = document.getElementById('ordersTable');
             const tradesTable = document.getElementById('tradesTable');
+            const algoOrdersTable = document.getElementById('algoOrdersTable');
+            const hideTables = () => [ordersTable, tradesTable, algoOrdersTable].forEach((table) => { table.hidden = true; });
             const loadButton = document.getElementById('loadHistory');
             const formatTime = (time) => new Date(time).toLocaleString();
             const generation = modeGeneration;
+            // Futures history is read-only: no Cancel buttons, and TP/SL legs get their own table
+            const isFutures = currentMarket() === 'futures';
 
             if (!symbol) {
-                ordersTable.hidden = true;
-                tradesTable.hidden = true;
+                hideTables();
                 status.textContent = 'Enter a symbol first.';
                 return;
             }
@@ -567,20 +586,19 @@
             status.textContent = `Loading history for ${symbol}...`;
 
             try {
-                const response = await fetch(`/order-history/${encodeURIComponent(symbol)}?mode=${currentMode()}`);
+                const response = await fetch(`/order-history/${encodeURIComponent(symbol)}?mode=${currentMode()}&market=${currentMarket()}`);
                 const result = await response.json();
 
                 if (generation !== modeGeneration) {
                     return;
                 }
                 if (!result.success) {
-                    ordersTable.hidden = true;
-                    tradesTable.hidden = true;
+                    hideTables();
                     status.textContent = result.error;
                     return;
                 }
 
-                const { orders, trades } = result.data;
+                const { orders, trades, algoOrders } = result.data;
                 const emptyMessages = [];
 
                 const ordersBody = document.getElementById('ordersBody');
@@ -590,8 +608,9 @@
                     formatTime(order.time), order.side, order.type, order.status,
                     order.price, order.origQty, order.executedQty
                 ]));
+                document.getElementById('ordersActionHeader').hidden = isFutures;
                 // The rows belong to the symbol and mode they were loaded with, not to whatever the inputs say later
-                orders.forEach((order, index) => {
+                (isFutures ? [] : orders).forEach((order, index) => {
                     const cell = document.createElement('td');
                     if (OPEN_ORDER_STATUSES.includes(order.status)) {
                         const button = document.createElement('button');
@@ -618,11 +637,24 @@
                     emptyMessages.push(`No trades for ${symbol}.`);
                 }
 
+                if (isFutures) {
+                    document.getElementById('algoOrdersHeading').textContent = `TP/SL orders: ${symbol}`;
+                    renderRows(document.getElementById('algoOrdersBody'), algoOrders.map((algoOrder) => [
+                        formatTime(algoOrder.time), algoOrder.side, algoOrder.type, algoOrder.status,
+                        algoOrder.triggerPrice, algoOrder.quantity
+                    ]));
+                    algoOrdersTable.hidden = algoOrders.length === 0;
+                    if (algoOrders.length === 0) {
+                        emptyMessages.push(`No TP/SL orders for ${symbol}.`);
+                    }
+                } else {
+                    algoOrdersTable.hidden = true;
+                }
+
                 status.textContent = emptyMessages.join(' ');
             } catch (error) {
                 if (generation === modeGeneration) {
-                    ordersTable.hidden = true;
-                    tradesTable.hidden = true;
+                    hideTables();
                     status.textContent = error.message;
                 }
             } finally {
@@ -688,9 +720,8 @@
             document.getElementById('orderMode').value = mode;
             document.getElementById('orderMarket').value = market;
             document.getElementById('showSmallBalancesLabel').textContent = SHOW_ALL_LABELS[mode];
-            // Balances and History are spot-only
+            // Balances are spot-only; History works in both markets
             document.getElementById('balancesSection').hidden = isFutures;
-            document.getElementById('historySection').hidden = isFutures;
             updateOrderTypeFields();
 
             const resultDiv = document.getElementById('result');
@@ -698,6 +729,7 @@
             resultDiv.replaceChildren();
             document.getElementById('ordersTable').hidden = true;
             document.getElementById('tradesTable').hidden = true;
+            document.getElementById('algoOrdersTable').hidden = true;
             document.getElementById('historyStatus').textContent = '';
             document.getElementById('loadHistory').disabled = false;
 

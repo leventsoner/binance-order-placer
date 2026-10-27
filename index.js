@@ -26,6 +26,9 @@ const FUTURES_MULTI_ASSETS_ENDPOINT = '/fapi/v1/multiAssetsMargin';
 const FUTURES_SYMBOL_CONFIG_ENDPOINT = '/fapi/v1/symbolConfig';
 const FUTURES_MARGIN_TYPE_ENDPOINT = '/fapi/v1/marginType';
 const FUTURES_LEVERAGE_ENDPOINT = '/fapi/v1/leverage';
+const FUTURES_ALL_ORDERS_ENDPOINT = '/fapi/v1/allOrders';
+const FUTURES_USER_TRADES_ENDPOINT = '/fapi/v1/userTrades';
+const FUTURES_ALL_ALGO_ORDERS_ENDPOINT = '/fapi/v1/allAlgoOrders';
 const FUTURES_LEVERAGE = 3;
 const FUTURES_MARGIN_TYPE = 'ISOLATED';
 const NO_NEED_TO_CHANGE_MARGIN_TYPE = -4046;
@@ -170,6 +173,29 @@ async function getOrderHistory(mode, symbol) {
         )),
         trades: trades.reverse().map(({ id, orderId, time, isBuyer, price, qty, quoteQty, commission, commissionAsset }) => (
             { id, orderId, time, side: isBuyer ? 'BUY' : 'SELL', price, qty, quoteQty, commission, commissionAsset }
+        ))
+    };
+}
+
+// TP/SL legs live in Binance's Algo Service, so they never appear in allOrders.
+// allOrders and userTrades come oldest first like spot; allAlgoOrders already comes newest first.
+async function getFuturesOrderHistory(mode, symbol) {
+    const params = { symbol, limit: HISTORY_LIMIT, recvWindow: 20000 };
+    const [orders, trades, algoOrders] = await Promise.all([
+        signedRequest(mode.futures, 'GET', FUTURES_ALL_ORDERS_ENDPOINT, params),
+        signedRequest(mode.futures, 'GET', FUTURES_USER_TRADES_ENDPOINT, params),
+        signedRequest(mode.futures, 'GET', FUTURES_ALL_ALGO_ORDERS_ENDPOINT, params)
+    ]);
+
+    return {
+        orders: orders.reverse().map(({ orderId, time, side, type, status, price, origQty, executedQty }) => (
+            { orderId, time, side, type, status, price, origQty, executedQty }
+        )),
+        trades: trades.reverse().map(({ id, orderId, time, side, price, qty, quoteQty, commission, commissionAsset }) => (
+            { id, orderId, time, side, price, qty, quoteQty, commission, commissionAsset }
+        )),
+        algoOrders: algoOrders.map(({ algoId, createTime, side, orderType, algoStatus, triggerPrice, quantity }) => (
+            { algoId, time: createTime, side, type: orderType, status: algoStatus, triggerPrice, quantity }
         ))
     };
 }
@@ -667,7 +693,11 @@ app.get('/balances', async (req, res) => {
 app.get('/order-history/:symbol', async (req, res) => {
     try {
         const mode = parseMode(req.query.mode);
-        const history = await getOrderHistory(mode, parseSymbol(req.params.symbol));
+        const market = parseMarket(req.query.market ?? 'spot');
+        const symbol = parseSymbol(req.params.symbol);
+        const history = market === 'futures'
+            ? await getFuturesOrderHistory(mode, symbol)
+            : await getOrderHistory(mode, symbol);
         res.json({ success: true, data: history });
     } catch (error) {
         res.json({ success: false, error: errorMessage(error) });
