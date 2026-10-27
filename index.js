@@ -595,8 +595,28 @@ async function placeFuturesOrder(mode, body) {
 // Binance cancels the whole order list when one of its orders is cancelled
 async function cancelOrder(mode, body) {
     const symbol = parseSymbol(body.symbol);
+    if (parseMarket(body.market ?? 'spot') === 'futures') {
+        return cancelFuturesOrder(mode, symbol, body);
+    }
+    if (body.algoId !== undefined) {
+        throw new Error('Algo ID is only used for futures TP/SL orders');
+    }
     const orderId = parseOrderId(body.orderId);
     return signedRequest(mode, 'DELETE', ORDER_ENDPOINT, { symbol, orderId, recvWindow: 20000 });
+}
+
+// An entry and its TP/SL legs are separate Binance orders, so cancelling one never cancels the other.
+// The algo endpoint identifies a leg by algoId alone; the symbol is only checked.
+async function cancelFuturesOrder(mode, symbol, body) {
+    if ((body.orderId === undefined) === (body.algoId === undefined)) {
+        throw new Error('Send either an order ID or an algo ID');
+    }
+    if (body.algoId !== undefined) {
+        const algoId = parseOrderId(body.algoId, 'Algo ID');
+        return signedRequest(mode.futures, 'DELETE', FUTURES_ALGO_ORDER_ENDPOINT, { algoId, recvWindow: 20000 });
+    }
+    const orderId = parseOrderId(body.orderId);
+    return signedRequest(mode.futures, 'DELETE', FUTURES_ORDER_ENDPOINT, { symbol, orderId, recvWindow: 20000 });
 }
 
 // Query strings can repeat a key, which Express turns into an array, so require a plain string
@@ -630,9 +650,9 @@ function parsePositiveDecimal(value, label) {
 }
 
 // Kept as a string: order IDs are sent to Binance exactly as received
-function parseOrderId(value) {
+function parseOrderId(value, label = 'Order ID') {
     if (typeof value !== 'string' || !/^\d{1,20}$/.test(value) || BigInt(value) === 0n) {
-        throw new Error('Order ID must be a positive whole number');
+        throw new Error(`${label} must be a positive whole number`);
     }
     return value;
 }

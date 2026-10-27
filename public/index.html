@@ -239,7 +239,7 @@
                         <th scope="col">Price</th>
                         <th scope="col">Quantity</th>
                         <th scope="col">Filled</th>
-                        <th scope="col" id="ordersActionHeader">Action</th>
+                        <th scope="col">Action</th>
                     </tr>
                 </thead>
                 <tbody id="ordersBody"></tbody>
@@ -272,6 +272,7 @@
                         <th scope="col">Status</th>
                         <th scope="col">Trigger price</th>
                         <th scope="col">Quantity</th>
+                        <th scope="col">Action</th>
                     </tr>
                 </thead>
                 <tbody id="algoOrdersBody"></tbody>
@@ -299,7 +300,7 @@
 
         const TP_SL_NOTES = {
             spot: 'Optional, Limit and Market orders only. Fill in both or neither. Limit: once the order fully fills, Binance places a take-profit limit at Take Profit Price and a stop-market order at Stop Loss Price for the same quantity. Market: after the order fills, a take-profit limit and stop-market pair is placed for the filled quantity (less any fee taken in the bought coin). When one executes, the other is cancelled. For Market these are two separate requests: if the second is rejected, the order stays filled without TP/SL and the error says so.',
-            futures: "Optional, Limit and Market orders only. Fill in both or neither. Right after the order, two separate reduce-only orders are placed for the order's quantity: a stop-market at Stop Loss Price and a take-profit-market at Take Profit Price, both triggered by the last price. A Limit order's take-profit or stop-loss is placed straight away, so it can trigger before the order fills, and then closes nothing. If either one is rejected, the order stays placed and the error says what is missing. Neither is cancelled when the other triggers: in testing, Binance left both open after the position was closed by hand. This page cannot cancel futures orders, so cancel leftovers on Binance."
+            futures: "Optional, Limit and Market orders only. Fill in both or neither. Right after the order, two separate reduce-only orders are placed for the order's quantity: a stop-market at Stop Loss Price and a take-profit-market at Take Profit Price, both triggered by the last price. A Limit order's take-profit or stop-loss is placed straight away, so it can trigger before the order fills, and then closes nothing. If either one is rejected, the order stays placed and the error says what is missing. Neither is cancelled when the other triggers: in testing, Binance left both open after the position was closed by hand. Cancel leftovers from the History list."
         };
 
         const OPEN_ORDER_STATUSES = ['NEW', 'PARTIALLY_FILLED'];
@@ -573,7 +574,7 @@
             const loadButton = document.getElementById('loadHistory');
             const formatTime = (time) => new Date(time).toLocaleString();
             const generation = modeGeneration;
-            // Futures history is read-only: no Cancel buttons, and TP/SL legs get their own table
+            // Futures TP/SL legs are algo orders, listed in their own table
             const isFutures = currentMarket() === 'futures';
 
             if (!symbol) {
@@ -603,21 +604,21 @@
 
                 const ordersBody = document.getElementById('ordersBody');
                 const mode = currentMode();
+                const market = currentMarket();
                 document.getElementById('ordersHeading').textContent = `Orders: ${symbol}`;
                 renderRows(ordersBody, orders.map((order) => [
                     formatTime(order.time), order.side, order.type, order.status,
                     order.price, order.origQty, order.executedQty
                 ]));
-                document.getElementById('ordersActionHeader').hidden = isFutures;
-                // The rows belong to the symbol and mode they were loaded with, not to whatever the inputs say later
-                (isFutures ? [] : orders).forEach((order, index) => {
+                // The rows belong to the symbol, mode and market they were loaded with, not to whatever the inputs say later
+                orders.forEach((order, index) => {
                     const cell = document.createElement('td');
                     if (OPEN_ORDER_STATUSES.includes(order.status)) {
                         const button = document.createElement('button');
                         button.type = 'button';
                         button.textContent = 'Cancel';
                         button.setAttribute('aria-label', `Cancel ${order.side} ${order.type} order ${order.orderId}`);
-                        button.addEventListener('click', () => cancelOrder(button, mode, symbol, order));
+                        button.addEventListener('click', () => cancelOrder(button, mode, market, symbol, order));
                         cell.appendChild(button);
                     }
                     ordersBody.rows[index].appendChild(cell);
@@ -639,10 +640,23 @@
 
                 if (isFutures) {
                     document.getElementById('algoOrdersHeading').textContent = `TP/SL orders: ${symbol}`;
-                    renderRows(document.getElementById('algoOrdersBody'), algoOrders.map((algoOrder) => [
+                    const algoOrdersBody = document.getElementById('algoOrdersBody');
+                    renderRows(algoOrdersBody, algoOrders.map((algoOrder) => [
                         formatTime(algoOrder.time), algoOrder.side, algoOrder.type, algoOrder.status,
                         algoOrder.triggerPrice, algoOrder.quantity
                     ]));
+                    algoOrders.forEach((algoOrder, index) => {
+                        const cell = document.createElement('td');
+                        if (algoOrder.status === 'NEW') {
+                            const button = document.createElement('button');
+                            button.type = 'button';
+                            button.textContent = 'Cancel';
+                            button.setAttribute('aria-label', `Cancel ${algoOrder.side} ${algoOrder.type} TP/SL order ${algoOrder.algoId}`);
+                            button.addEventListener('click', () => cancelOrder(button, mode, market, symbol, algoOrder));
+                            cell.appendChild(button);
+                        }
+                        algoOrdersBody.rows[index].appendChild(cell);
+                    });
                     algoOrdersTable.hidden = algoOrders.length === 0;
                     if (algoOrders.length === 0) {
                         emptyMessages.push(`No TP/SL orders for ${symbol}.`);
@@ -666,16 +680,26 @@
 
         document.getElementById('loadHistory').addEventListener('click', () => loadHistory());
 
-        // Like an order, a sent cancel shows its result even after a mode switch, labelled with its own mode
-        async function cancelOrder(button, mode, symbol, order) {
-            const label = MODE_DISPLAY[mode].label;
+        // Like an order, a sent cancel shows its result even after a mode switch, labelled with its own view.
+        // A futures TP/SL leg is an algo order, identified by algoId instead of orderId.
+        async function cancelOrder(button, mode, market, symbol, order) {
+            const label = viewLabel(mode, market);
+            const isAlgo = order.algoId !== undefined;
             const generation = modeGeneration;
 
             if (mode === 'live') {
-                const listNote = order.orderListId !== -1
-                    ? ' It is part of an order list, so every order in that list will be cancelled too.'
-                    : '';
-                if (!confirm(`Cancel LIVE ${order.side} ${order.type} order ${order.orderId} for ${symbol}?${listNote}`)) {
+                let note;
+                if (isAlgo) {
+                    note = ' Any open position stays open without it.';
+                } else if (market === 'futures') {
+                    note = ' Its TP/SL orders, if any, stay open.';
+                } else {
+                    note = order.orderListId !== -1
+                        ? ' It is part of an order list, so every order in that list will be cancelled too.'
+                        : '';
+                }
+                const description = isAlgo ? `TP/SL order ${order.algoId}` : `order ${order.orderId}`;
+                if (!confirm(`Cancel ${label} ${order.side} ${order.type} ${description} for ${symbol}?${note}`)) {
                     return;
                 }
             }
@@ -688,7 +712,9 @@
                     headers: {
                         'Content-Type': 'application/x-www-form-urlencoded',
                     },
-                    body: new URLSearchParams({ mode, symbol, orderId: order.orderId }),
+                    body: new URLSearchParams(isAlgo
+                        ? { mode, market, symbol, algoId: order.algoId }
+                        : { mode, market, symbol, orderId: order.orderId }),
                 });
 
                 const result = await response.json();
