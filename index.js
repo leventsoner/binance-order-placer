@@ -31,6 +31,7 @@ const FUTURES_USER_TRADES_ENDPOINT = '/fapi/v1/userTrades';
 const FUTURES_ALL_ALGO_ORDERS_ENDPOINT = '/fapi/v1/allAlgoOrders';
 const FUTURES_BALANCE_ENDPOINT = '/fapi/v3/balance';
 const FUTURES_BALANCE_ASSETS = ['USDT', 'BNB'];
+const FUTURES_POSITION_RISK_ENDPOINT = '/fapi/v3/positionRisk';
 const FUTURES_LEVERAGE = 3;
 const FUTURES_MARGIN_TYPE = 'ISOLATED';
 const NO_NEED_TO_CHANGE_MARGIN_TYPE = -4046;
@@ -172,6 +173,25 @@ async function getFuturesBalances(mode) {
             availableBalance: balance?.availableBalance ?? '0'
         };
     });
+}
+
+// Hedge mode reports the side in positionSide; One-way mode reports BOTH and signs positionAmt
+async function getFuturesPositions(mode) {
+    const positions = await signedRequest(mode.futures, 'GET', FUTURES_POSITION_RISK_ENDPOINT, { recvWindow: 20000 });
+    return positions
+        .filter(({ positionAmt }) => Number(positionAmt) !== 0)
+        .map(({ symbol, positionSide, positionAmt, entryPrice, markPrice, unRealizedProfit, liquidationPrice }) => ({
+            symbol,
+            side: positionSide === 'LONG' || positionSide === 'SHORT'
+                ? positionSide
+                : (Number(positionAmt) > 0 ? 'LONG' : 'SHORT'),
+            size: positionAmt.replace(/^-/, ''),
+            entryPrice,
+            markPrice,
+            unrealizedPnl: unRealizedProfit,
+            liquidationPrice
+        }))
+        .sort((a, b) => a.symbol.localeCompare(b.symbol));
 }
 
 // Without orderId/fromId, Binance returns the most recent entries oldest first
@@ -724,6 +744,15 @@ app.get('/balances', async (req, res) => {
             ? await getFuturesBalances(mode)
             : await getAccountBalances(mode);
         res.json({ success: true, data: balances });
+    } catch (error) {
+        res.json({ success: false, error: errorMessage(error) });
+    }
+});
+
+app.get('/futures-positions', async (req, res) => {
+    try {
+        const positions = await getFuturesPositions(parseMode(req.query.mode));
+        res.json({ success: true, data: positions });
     } catch (error) {
         res.json({ success: false, error: errorMessage(error) });
     }
