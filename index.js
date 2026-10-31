@@ -194,6 +194,53 @@ async function getFuturesPositions(mode) {
         .sort((a, b) => a.symbol.localeCompare(b.symbol));
 }
 
+// The page sends only symbol and side: the size is re-read from Binance so a stale row can never
+// close the wrong amount, and a repeated click finds no position and sends nothing.
+// reduceOnly (One-way) or positionSide (Hedge, where Binance rejects reduceOnly) means the order
+// can only shrink this position. Symbol and account settings are never touched.
+async function closeFuturesPosition(mode, body) {
+    const symbol = parseSymbol(body.symbol);
+    const { side } = body;
+    if (side !== 'LONG' && side !== 'SHORT') {
+        throw new Error('Side must be LONG or SHORT');
+    }
+    const { futures } = mode;
+
+    let positions;
+    try {
+        positions = await signedRequest(futures, 'GET', FUTURES_POSITION_RISK_ENDPOINT, { symbol, recvWindow: 20000 });
+    } catch (error) {
+        throw new Error(`${errorMessage(error).replace(/\.$/, '')}; no order was placed.`);
+    }
+    const position = positions.find(({ positionSide, positionAmt }) => Number(positionAmt) !== 0 && (positionSide === 'BOTH'
+        ? (Number(positionAmt) > 0 ? 'LONG' : 'SHORT') === side
+        : positionSide === side));
+    if (!position) {
+        throw new Error(`No open ${side} ${symbol} position to close; no order was placed.`);
+    }
+
+    const orderParams = {
+        symbol,
+        side: side === 'LONG' ? 'SELL' : 'BUY',
+        type: 'MARKET',
+        quantity: position.positionAmt.replace(/^-/, ''),
+        ...(position.positionSide === 'BOTH' ? { reduceOnly: 'true' } : { positionSide: side }),
+        newOrderRespType: 'RESULT',
+        recvWindow: 20000
+    };
+    let order;
+    try {
+        order = await signedRequest(futures, 'POST', FUTURES_ORDER_ENDPOINT, orderParams);
+    } catch (error) {
+        // As in placeFuturesExit, only a Binance rejection proves the order was not placed
+        if (!error.msg || error.code === -1006 || error.code === -1007) {
+            throw new Error(`Close request failed (${errorMessage(error).replace(/\.$/, '')}), so the order may or may not have been placed. Check your positions on Binance.`);
+        }
+        throw error;
+    }
+    return { order, note: `Any TP/SL orders for ${symbol} stay open; cancel them from the History list.` };
+}
+
 // Without orderId/fromId, Binance returns the most recent entries oldest first
 async function getOrderHistory(mode, symbol) {
     const params = { symbol, limit: HISTORY_LIMIT, recvWindow: 20000 };
@@ -719,6 +766,16 @@ app.post('/cancel-order', async (req, res) => {
     try {
         const mode = parseMode(req.body.mode);
         const result = await cancelOrder(mode, req.body);
+        res.json({ success: true, data: result });
+    } catch (error) {
+        res.json({ success: false, error: errorMessage(error) });
+    }
+});
+
+app.post('/close-position', async (req, res) => {
+    try {
+        const mode = parseMode(req.body.mode);
+        const result = await closeFuturesPosition(mode, req.body);
         res.json({ success: true, data: result });
     } catch (error) {
         res.json({ success: false, error: errorMessage(error) });

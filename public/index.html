@@ -164,6 +164,7 @@
                         <th scope="col">Mark price</th>
                         <th scope="col">Unrealized PnL</th>
                         <th scope="col">Liquidation price</th>
+                        <th scope="col">Action</th>
                     </tr>
                 </thead>
                 <tbody id="positionsBody"></tbody>
@@ -606,10 +607,22 @@
                 } else if (result.data.length === 0) {
                     status.textContent = 'No open futures positions.';
                 } else {
-                    renderRows(document.getElementById('positionsBody'), result.data.map((position) => [
+                    const positionsBody = document.getElementById('positionsBody');
+                    renderRows(positionsBody, result.data.map((position) => [
                         position.symbol, position.side, position.size, position.entryPrice,
                         position.markPrice, position.unrealizedPnl, position.liquidationPrice
                     ]));
+                    // The rows belong to the mode they were loaded with, like the History Cancel buttons
+                    result.data.forEach((position, index) => {
+                        const cell = document.createElement('td');
+                        const button = document.createElement('button');
+                        button.type = 'button';
+                        button.textContent = 'Close';
+                        button.setAttribute('aria-label', `Close ${position.side} ${position.symbol} position`);
+                        button.addEventListener('click', () => closePosition(button, mode, position));
+                        cell.appendChild(button);
+                        positionsBody.rows[index].appendChild(cell);
+                    });
                     table.hidden = false;
                     status.textContent = '';
                 }
@@ -807,6 +820,45 @@
 
             if (generation === modeGeneration) {
                 loadHistory(symbol);
+            }
+        }
+
+        // Like a cancel, a sent close shows its result even after a mode switch, labelled with its own view.
+        // Only symbol and side are sent; the server closes the position's current full size.
+        async function closePosition(button, mode, position) {
+            const label = viewLabel(mode, 'futures');
+            const generation = modeGeneration;
+            const { symbol, side, size } = position;
+            const orderSide = side === 'LONG' ? 'SELL' : 'BUY';
+
+            if (mode === 'live' && !confirm(`Close ${label} ${side} ${size} ${symbol} position at market? This places a MARKET ${orderSide} order for the full position size. Any TP/SL orders for ${symbol} stay open; cancel them from the History list.`)) {
+                return;
+            }
+
+            button.disabled = true;
+
+            try {
+                const response = await fetch('/close-position', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: new URLSearchParams({ mode, symbol, side }),
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    showResult('success', `Position Closed (${label})`, JSON.stringify(result.data, null, 2));
+                } else {
+                    showResult('error', `Error Closing Position (${label})`, result.error);
+                }
+            } catch (error) {
+                showResult('error', `Error (${label})`, error.message);
+            }
+
+            if (generation === modeGeneration) {
+                loadBalances();
             }
         }
 
