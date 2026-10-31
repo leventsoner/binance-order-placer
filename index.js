@@ -32,7 +32,8 @@ const FUTURES_ALL_ALGO_ORDERS_ENDPOINT = '/fapi/v1/allAlgoOrders';
 const FUTURES_BALANCE_ENDPOINT = '/fapi/v3/balance';
 const FUTURES_BALANCE_ASSETS = ['USDT', 'BNB'];
 const FUTURES_POSITION_RISK_ENDPOINT = '/fapi/v3/positionRisk';
-const FUTURES_LEVERAGE = 3;
+const FUTURES_MIN_LEVERAGE = 1;
+const FUTURES_MAX_LEVERAGE = 8;
 const FUTURES_MARGIN_TYPE = 'ISOLATED';
 const NO_NEED_TO_CHANGE_MARGIN_TYPE = -4046;
 
@@ -176,15 +177,20 @@ async function getFuturesBalances(mode) {
 }
 
 // Hedge mode reports the side in positionSide; One-way mode reports BOTH and signs positionAmt
+function positionSideOf({ positionSide, positionAmt }) {
+    if (positionSide === 'LONG' || positionSide === 'SHORT') {
+        return positionSide;
+    }
+    return Number(positionAmt) > 0 ? 'LONG' : 'SHORT';
+}
+
 async function getFuturesPositions(mode) {
     const positions = await signedRequest(mode.futures, 'GET', FUTURES_POSITION_RISK_ENDPOINT, { recvWindow: 20000 });
     return positions
         .filter(({ positionAmt }) => Number(positionAmt) !== 0)
         .map(({ symbol, positionSide, positionAmt, entryPrice, markPrice, unRealizedProfit, liquidationPrice }) => ({
             symbol,
-            side: positionSide === 'LONG' || positionSide === 'SHORT'
-                ? positionSide
-                : (Number(positionAmt) > 0 ? 'LONG' : 'SHORT'),
+            side: positionSideOf({ positionSide, positionAmt }),
             size: positionAmt.replace(/^-/, ''),
             entryPrice,
             markPrice,
@@ -192,6 +198,19 @@ async function getFuturesPositions(mode) {
             liquidationPrice
         }))
         .sort((a, b) => a.symbol.localeCompare(b.symbol));
+}
+
+// Read-only, so the page can warn before an order raises the leverage of an open position
+async function getFuturesLeverage(mode, symbol) {
+    const [[symbolConfig], positions] = await Promise.all([
+        signedRequest(mode.futures, 'GET', FUTURES_SYMBOL_CONFIG_ENDPOINT, { symbol, recvWindow: 20000 }),
+        signedRequest(mode.futures, 'GET', FUTURES_POSITION_RISK_ENDPOINT, { symbol, recvWindow: 20000 })
+    ]);
+    const open = positions.find(({ positionAmt }) => Number(positionAmt) !== 0);
+    return {
+        leverage: symbolConfig.leverage,
+        position: open ? { side: positionSideOf(open), size: open.positionAmt.replace(/^-/, '') } : null
+    };
 }
 
 // The page sends only symbol and side: the size is re-read from Binance so a stale row can never
@@ -594,14 +613,16 @@ function describeExit(label, exit) {
         : `${label} not placed: ${reason}`;
 }
 
-// Every futures order runs at 3x isolated. Symbol settings are set when they differ; account-wide
-// settings are never changed. Any failure before the order request means no order was placed.
+// Every futures order runs isolated at the requested leverage (1x-8x). The margin type is set when it
+// differs and the leverage is always sent; account-wide settings are never changed. Any failure
+// before the order request means no order was placed.
 // TP and SL are separate reduce-only conditional orders placed right after the entry (Binance's
 // futures API cannot place them on fill), so a failed leg is always reported, never dropped.
 async function placeFuturesOrder(mode, body) {
     if (body.type !== 'LIMIT' && body.type !== 'MARKET') {
         throw new Error('Futures supports only LIMIT and MARKET orders');
     }
+    const requestedLeverage = parseLeverage(body.leverage);
     const orderParams = { ...buildOrderParams(body), newOrderRespType: 'RESULT' };
     const tpSl = parseFuturesTpSl(body, orderParams);
     const { symbol, side } = orderParams;
@@ -630,7 +651,17 @@ async function placeFuturesOrder(mode, body) {
                 }
             }
         }
-        const leverageResult = await signedRequest(futures, 'POST', FUTURES_LEVERAGE_ENDPOINT, { symbol, leverage: FUTURES_LEVERAGE, recvWindow: 20000 });
+        // Binance refuses to lower an isolated symbol's leverage while a position is open
+        const currentLeverage = symbolConfig?.leverage;
+        let leverageResult;
+        try {
+            leverageResult = await signedRequest(futures, 'POST', FUTURES_LEVERAGE_ENDPOINT, { symbol, leverage: requestedLeverage, recvWindow: 20000 });
+        } catch (error) {
+            if (error.msg && requestedLeverage < currentLeverage) {
+                throw new Error(`${error.msg.replace(/\.$/, '')}. ${symbol} is at ${currentLeverage}x: choose ${currentLeverage}x or more, or close its open position first`);
+            }
+            throw error;
+        }
         leverage = leverageResult.leverage;
     } catch (error) {
         throw notPlaced(error);
@@ -723,6 +754,15 @@ function parseSymbol(value) {
     return value;
 }
 
+// The cap is the app's own safety limit; Binance's per-symbol maximum may be lower and rejects the order itself
+function parseLeverage(value) {
+    const leverage = Number(value);
+    if (typeof value !== 'string' || !/^\d+$/.test(value) || leverage < FUTURES_MIN_LEVERAGE || leverage > FUTURES_MAX_LEVERAGE) {
+        throw new Error(`Leverage must be a whole number from ${FUTURES_MIN_LEVERAGE} to ${FUTURES_MAX_LEVERAGE}`);
+    }
+    return leverage;
+}
+
 // Returns the string as typed: converting to a Number would send tiny values as `1e-7`, which Binance rejects
 function parsePositiveDecimal(value, label) {
     if (typeof value !== 'string' || !/^\d+(\.\d+)?$/.test(value) || Number(value) <= 0) {
@@ -810,6 +850,16 @@ app.get('/futures-positions', async (req, res) => {
     try {
         const positions = await getFuturesPositions(parseMode(req.query.mode));
         res.json({ success: true, data: positions });
+    } catch (error) {
+        res.json({ success: false, error: errorMessage(error) });
+    }
+});
+
+app.get('/futures-leverage/:symbol', async (req, res) => {
+    try {
+        const mode = parseMode(req.query.mode);
+        const result = await getFuturesLeverage(mode, parseSymbol(req.params.symbol));
+        res.json({ success: true, data: result });
     } catch (error) {
         res.json({ success: false, error: errorMessage(error) });
     }

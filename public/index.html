@@ -199,6 +199,12 @@
             </select>
         </div>
 
+        <div class="form-group" id="leverageGroup" hidden>
+            <label for="leverage">Leverage: <output id="leverageValue" for="leverage">3x</output></label>
+            <input type="range" id="leverage" name="leverage" min="1" max="8" step="1" value="3" aria-describedby="leverageHelper" disabled>
+            <small id="leverageHelper" class="helper-text">1x to 8x, capped by this app for safety. Higher leverage means a smaller price move against the position liquidates it. The leverage is set on the symbol on Binance, which also changes any position already open on it. Live orders above 5x ask for confirmation first.</small>
+        </div>
+
         <div class="form-group">
             <label for="timeInForce">Time In Force:</label>
             <select id="timeInForce" name="timeInForce" required>
@@ -321,11 +327,14 @@
             }
         };
 
-        // Futures always runs at 3x isolated (set by the server); the banner says so before any order
+        // Futures runs isolated at the slider's leverage (set by the server); the banner says so before any order
         const FUTURES_BANNERS = {
-            testnet: "TESTNET FUTURES: orders go to Binance's USD-M futures testnet at 3x isolated leverage. No real funds.",
-            live: 'LIVE FUTURES: orders open 3x isolated leveraged USD-M positions with real funds.'
+            testnet: (leverage) => `TESTNET FUTURES: orders go to Binance's USD-M futures testnet at ${leverage}x isolated leverage. No real funds.`,
+            live: (leverage) => `LIVE FUTURES: orders open ${leverage}x isolated leveraged USD-M positions with real funds.`
         };
+        const DEFAULT_LEVERAGE = 3;
+        // Live futures orders above this leverage ask for confirmation first
+        const LEVERAGE_CONFIRM_ABOVE = 5;
 
         const TP_SL_NOTES = {
             spot: 'Optional, Limit and Market orders only. Fill in both or neither. Limit: once the order fully fills, Binance places a take-profit limit at Take Profit Price and a stop-market order at Stop Loss Price for the same quantity. Market: after the order fills, a take-profit limit and stop-market pair is placed for the filled quantity (less any fee taken in the bought coin). When one executes, the other is cancelled. For Market these are two separate requests: if the second is rejected, the order stays filled without TP/SL and the error says so.',
@@ -372,6 +381,30 @@
             resultDiv.replaceChildren(headingElement, body);
         }
 
+        // Fails closed: if the current leverage cannot be checked, the caller sends no order
+        async function liveLeverageWarnings(symbol, leverage) {
+            let result;
+            try {
+                const response = await fetch(`/futures-leverage/${encodeURIComponent(symbol)}?mode=live`);
+                result = await response.json();
+            } catch (error) {
+                throw new Error(`Could not check the current ${symbol} leverage (${error.message})`);
+            }
+            if (!result.success) {
+                throw new Error(`Could not check the current ${symbol} leverage (${result.error.replace(/\.$/, '')})`);
+            }
+            const warnings = [];
+            const { leverage: currentLeverage, position } = result.data;
+            if (position && leverage > currentLeverage) {
+                warnings.push(`You have an open ${position.side} ${position.size} ${symbol} position at ${currentLeverage}x. This order sets ${symbol} to ${leverage}x, which changes that open position to ${leverage}x too, and Binance will not let you lower it again while the position is open.`);
+            }
+            if (leverage > LEVERAGE_CONFIRM_ABOVE) {
+                const liquidationMove = Math.round(1000 / leverage) / 10;
+                warnings.push(`At ${leverage}x, a price move of about ${liquidationMove}% against the position liquidates it, and fees and maintenance margin make that move smaller. If it is liquidated, the whole isolated margin for the position is lost.`);
+            }
+            return warnings;
+        }
+
         // The order was really sent, so its result is shown even after a mode switch, labelled with its own mode.
         // The button stays disabled until a short cooldown after the request ends, which also blocks Enter from
         // resubmitting: a request takes ~300 ms, shorter than the gap in a human double-click.
@@ -382,6 +415,23 @@
             const label = viewLabel(formData.get('mode'), formData.get('market'));
 
             submitButton.disabled = true;
+
+            if (formData.get('mode') === 'live' && formData.get('market') === 'futures') {
+                const symbol = formData.get('symbol');
+                const leverage = Number(formData.get('leverage'));
+                let warnings;
+                try {
+                    warnings = await liveLeverageWarnings(symbol, leverage);
+                } catch (error) {
+                    showResult('error', `Error Placing Order (${label})`, `${error.message}; no order was placed.`);
+                    submitButton.disabled = false;
+                    return;
+                }
+                if (warnings.length > 0 && !confirm(`Place a LIVE FUTURES ${formData.get('side')} ${symbol} order at ${leverage}x isolated leverage?\n\n${warnings.join('\n\n')}`)) {
+                    submitButton.disabled = false;
+                    return;
+                }
+            }
 
             try {
                 const response = await fetch('/place-order', {
@@ -870,7 +920,14 @@
             modeGeneration++;
 
             document.body.className = `mode-${mode}`;
-            document.getElementById('modeBanner').textContent = isFutures ? FUTURES_BANNERS[mode] : MODE_DISPLAY[mode].banner;
+            // Reset on every switch so a high testnet setting never carries over into live; set explicitly
+            // because browsers can restore form values on reload
+            const leverageField = document.getElementById('leverage');
+            leverageField.value = DEFAULT_LEVERAGE;
+            leverageField.disabled = !isFutures;
+            document.getElementById('leverageGroup').hidden = !isFutures;
+            document.getElementById('leverageValue').textContent = `${DEFAULT_LEVERAGE}x`;
+            document.getElementById('modeBanner').textContent = isFutures ? FUTURES_BANNERS[mode](DEFAULT_LEVERAGE) : MODE_DISPLAY[mode].banner;
             document.getElementById('submitOrder').textContent = `Place ${viewLabel(mode, market)} order`;
             document.getElementById('orderMode').value = mode;
             document.getElementById('orderMarket').value = market;
@@ -909,6 +966,13 @@
         });
 
         document.getElementById('type').addEventListener('change', updateOrderTypeFields);
+
+        document.getElementById('leverage').addEventListener('input', (e) => {
+            document.getElementById('leverageValue').textContent = `${e.target.value}x`;
+            if (currentMarket() === 'futures') {
+                document.getElementById('modeBanner').textContent = FUTURES_BANNERS[currentMode()](e.target.value);
+            }
+        });
 
         document.getElementById('symbol').addEventListener('change', (e) => {
             updateSymbolInfo(e.target.value);

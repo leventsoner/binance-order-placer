@@ -6,7 +6,8 @@ A web-based application that allows users to place cryptocurrency orders on Bina
 
 - Spot LIMIT, MARKET, Stop Limit and OCO orders, with GTC, IOC or FOK time in force
 - Optional take-profit and stop-loss prices on spot and futures LIMIT and MARKET orders
-- USD-M futures LIMIT and MARKET orders at 3x leverage with isolated margin
+- USD-M futures LIMIT and MARKET orders with isolated margin and a 1x-8x
+  leverage slider (default 3x), with a confirmation above 5x in live mode
 - Real-time symbol information validation, with quantity and price inputs that
   follow each symbol's step size and tick size
 - Spot balances, with balances worth under 10 USD hidden by default (on testnet,
@@ -82,10 +83,20 @@ orders through it. Anything else running on your own machine can still reach it.
    on testnet again.
 
 4. The **Market** toggle starts on **Spot**. Switch it to **Futures (USD-M)** to
-   place USD-M futures LIMIT and MARKET orders. Every futures order runs at
-   **3x leverage with isolated margin**: before each order the server sets the
-   symbol's margin type to ISOLATED and its leverage to 3. Setting the leverage
-   also changes the leverage of any position already open on that symbol. If
+   place USD-M futures LIMIT and MARKET orders with **isolated margin** at the
+   leverage chosen on the **Leverage** slider: 1x to 8x, a cap this app sets
+   for safety. The slider starts at the default of 3x and goes back to it on
+   every reload and every mode or market switch. In live mode, an order above
+   5x first asks for confirmation, with a warning about how small a price move
+   liquidates the position. Before each order the server sets the symbol's
+   margin type to ISOLATED and its leverage to the chosen value; Binance's own
+   maximum for the symbol may be lower, and then the order is rejected. Setting
+   the leverage also changes the leverage of any position already open on that
+   symbol, so in live mode an order that would raise an open position's
+   leverage first asks for confirmation too (one dialog covers both warnings;
+   if the page cannot check the current leverage, no order is sent). Binance
+   does not allow lowering the leverage of an isolated position while it is
+   open; the error then names the symbol's current leverage. If
    your futures account is in Hedge position mode or Multi-Assets mode, the
    order is rejected and nothing is changed; switch those settings on Binance.
    Stop Limit and OCO are spot-only, and the Balances section is hidden in the
@@ -142,6 +153,7 @@ rejected before anything is sent to Binance. Every API route answers with JSON:
   - type: "LIMIT", "MARKET", "STOP_LOSS_LIMIT" or "OCO" on spot; "LIMIT" or
     "MARKET" on futures
   - quantity (number)
+  - leverage (whole number 1-8) - futures only, required
   - timeInForce ("GTC", "IOC", or "FOK") - LIMIT, STOP_LOSS_LIMIT and OCO
   - price (number) - LIMIT, STOP_LOSS_LIMIT and OCO (the OCO's take-profit
     limit price)
@@ -154,7 +166,7 @@ rejected before anything is sent to Binance. Every API route answers with JSON:
   for OCO and for LIMIT with take-profit/stop-loss (OTOCO). MARKET with
   take-profit/stop-loss returns `{ entry, oco }`.
 - Futures success: `data` is `{ leverage, marginType: "ISOLATED", order }`,
-  where `order` is Binance's `/fapi/v1/order` response. With
+  where `leverage` is the value Binance confirmed and `order` is Binance's `/fapi/v1/order` response. With
   take-profit/stop-loss it also has `stopLoss` and `takeProfit`, Binance's
   `/fapi/v1/algoOrder` responses (with `algoId`). A failure while checking or
   setting the futures account and symbol settings ends with "no order was
@@ -198,6 +210,14 @@ rejected before anything is sent to Binance. Every API route answers with JSON:
   - trades: id, orderId, time, side, price, qty, quoteQty, commission, commissionAsset
   - algoOrders (futures only): algoId, time, side, type, status, triggerPrice,
     quantity - the 20 most recent take-profit/stop-loss orders
+
+### Get Futures Leverage
+- **GET** `/futures-leverage/:symbol?mode=live|testnet`
+- Read-only; used before live futures orders to warn about changing an open
+  position's leverage. Returns:
+  - leverage - the symbol's current leverage (number)
+  - position - `{ side: "LONG" | "SHORT", size }` for the symbol's open
+    position, or `null`
 
 ## Security Considerations
 
