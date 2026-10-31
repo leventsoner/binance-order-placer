@@ -126,7 +126,7 @@
 
     <section id="balancesSection" aria-labelledby="balancesHeading">
         <h2 id="balancesHeading">Balances</h2>
-        <p>
+        <p id="showSmallBalancesRow">
             <input type="checkbox" id="showSmallBalances" autocomplete="off">
             <label for="showSmallBalances" id="showSmallBalancesLabel">Show all balances</label>
         </p>
@@ -140,6 +140,16 @@
                 </tr>
             </thead>
             <tbody id="balancesBody"></tbody>
+        </table>
+        <table id="futuresBalancesTable" class="data-table" hidden>
+            <thead>
+                <tr>
+                    <th scope="col">Asset</th>
+                    <th scope="col">Wallet balance</th>
+                    <th scope="col">Available balance</th>
+                </tr>
+            </thead>
+            <tbody id="futuresBalancesBody"></tbody>
         </table>
         <button type="button" id="refreshBalances">Refresh</button>
     </section>
@@ -521,20 +531,22 @@
             }
         }
 
+        // Futures always gets USDT then BNB from the server, so it has no hidden rows and no checkbox
         async function loadBalances() {
             const status = document.getElementById('balancesStatus');
-            const table = document.getElementById('balancesTable');
             const refreshButton = document.getElementById('refreshBalances');
             const generation = modeGeneration;
             const mode = currentMode();
+            const isFutures = currentMarket() === 'futures';
+            const table = document.getElementById(isFutures ? 'futuresBalancesTable' : 'balancesTable');
 
             refreshButton.disabled = true;
             loadedBalances = null;
             table.hidden = true;
-            status.textContent = 'Loading balances...';
+            status.textContent = isFutures ? 'Loading futures balances...' : 'Loading balances...';
 
             try {
-                const response = await fetch(`/balances?mode=${mode}`);
+                const response = await fetch(`/balances?mode=${mode}&market=${isFutures ? 'futures' : 'spot'}`);
                 const result = await response.json();
 
                 if (generation !== modeGeneration) {
@@ -543,6 +555,12 @@
                 if (!result.success) {
                     table.hidden = true;
                     status.textContent = result.error;
+                } else if (isFutures) {
+                    renderRows(document.getElementById('futuresBalancesBody'), result.data.map(({ asset, walletBalance, availableBalance }) => (
+                        [asset, walletBalance, availableBalance]
+                    )));
+                    table.hidden = false;
+                    status.textContent = '';
                 } else {
                     loadedBalances = result.data;
                     loadedBalancesMode = mode;
@@ -746,8 +764,10 @@
             document.getElementById('orderMode').value = mode;
             document.getElementById('orderMarket').value = market;
             document.getElementById('showSmallBalancesLabel').textContent = SHOW_ALL_LABELS[mode];
-            // Balances are spot-only; History works in both markets
-            document.getElementById('balancesSection').hidden = isFutures;
+            document.getElementById('balancesHeading').textContent = isFutures ? 'Futures balances' : 'Balances';
+            document.getElementById('showSmallBalancesRow').hidden = isFutures;
+            document.getElementById('balancesTable').hidden = true;
+            document.getElementById('futuresBalancesTable').hidden = true;
             updateOrderTypeFields();
 
             const resultDiv = document.getElementById('result');
@@ -766,9 +786,7 @@
                 document.getElementById(`${id}Helper`).textContent = '';
             });
 
-            if (!isFutures) {
-                loadBalances();
-            }
+            loadBalances();
             updateSymbolInfo(document.getElementById('symbol').value);
         }
 

@@ -29,6 +29,8 @@ const FUTURES_LEVERAGE_ENDPOINT = '/fapi/v1/leverage';
 const FUTURES_ALL_ORDERS_ENDPOINT = '/fapi/v1/allOrders';
 const FUTURES_USER_TRADES_ENDPOINT = '/fapi/v1/userTrades';
 const FUTURES_ALL_ALGO_ORDERS_ENDPOINT = '/fapi/v1/allAlgoOrders';
+const FUTURES_BALANCE_ENDPOINT = '/fapi/v3/balance';
+const FUTURES_BALANCE_ASSETS = ['USDT', 'BNB'];
 const FUTURES_LEVERAGE = 3;
 const FUTURES_MARGIN_TYPE = 'ISOLATED';
 const NO_NEED_TO_CHANGE_MARGIN_TYPE = -4046;
@@ -157,6 +159,19 @@ async function getAccountBalances(mode) {
         .filter(({ free, locked }) => Number(free) > 0 || Number(locked) > 0)
         .map(({ asset, free, locked }) => ({ asset, free, locked, usdValue: usdValue(asset, free, locked, prices) }))
         .sort((a, b) => a.asset.localeCompare(b.asset));
+}
+
+// Always USDT then BNB; an asset Binance does not list counts as zero
+async function getFuturesBalances(mode) {
+    const balances = await signedRequest(mode.futures, 'GET', FUTURES_BALANCE_ENDPOINT, { recvWindow: 20000 });
+    return FUTURES_BALANCE_ASSETS.map((asset) => {
+        const balance = balances.find((entry) => entry.asset === asset);
+        return {
+            asset,
+            walletBalance: balance?.balance ?? '0',
+            availableBalance: balance?.availableBalance ?? '0'
+        };
+    });
 }
 
 // Without orderId/fromId, Binance returns the most recent entries oldest first
@@ -703,7 +718,11 @@ app.get('/symbol-info/:symbol', async (req, res) => {
 
 app.get('/balances', async (req, res) => {
     try {
-        const balances = await getAccountBalances(parseMode(req.query.mode));
+        const mode = parseMode(req.query.mode);
+        const market = parseMarket(req.query.market ?? 'spot');
+        const balances = market === 'futures'
+            ? await getFuturesBalances(mode)
+            : await getAccountBalances(mode);
         res.json({ success: true, data: balances });
     } catch (error) {
         res.json({ success: false, error: errorMessage(error) });
